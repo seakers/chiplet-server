@@ -5,15 +5,26 @@ from .models import Task
 from .serializers import TaskSerializer
 import random
 
+import sys
+sys.path.append('chiplet-model/dse')
+from gaCascades import runGACascades
+
 class DataGenerator:
     def __init__(self):
         self.data = []
 
     def generate_data(self):
-        self.data = [{"x": i, "y": random.randint(0, 10)} for i in range(0, 20)]
+        runGACascades(pop_size=5, n_gen=5)
 
     def get_data(self):
-        return self.data
+        try:
+            with open('chiplet-model/dse/results/points.txt', 'r') as file:
+                self.data = []
+                for line in file:
+                    x, y = map(float, line.strip().split(','))
+                    self.data.append({"x": x, "y": y})
+        except FileNotFoundError:
+            self.data = []
     
     def clear_data(self):
         self.data = []
@@ -41,8 +52,6 @@ def compute_sum(request):
 @api_view(['GET'])
 def get_chart_data(request):
     # Simulate dynamic data
-    if len(dataGenerator.get_data()) > 20:
-        dataGenerator.clear_data()
-    dataGenerator.add_random_data()
     data = dataGenerator.get_data()
+    print(data)
     return Response({"data": data})
