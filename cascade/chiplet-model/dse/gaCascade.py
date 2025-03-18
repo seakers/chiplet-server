@@ -4,15 +4,20 @@ import argparse
 import matplotlib 
 matplotlib.use('agg')
 
+# Add chiplet_model to the path
+import sys
+sys.path.append("".join(sys.path[0] + '/cascade/'))
+sys.path.append("".join(sys.path[0] + '/cascade/chiplet-model/'))
+
 import statistics
 import numpy as np
 from scipy.optimize import minimize, LinearConstraint
 from collections import Counter
 import csv
 
-from lib.plot_results import PlotResults
-from lib.chiplet_system import ChipletSystem
-from lib.trace_parser import TraceParser
+from dse.lib.plot_results import PlotResults
+from dse.lib.chiplet_system import ChipletSystem
+from dse.lib.trace_parser import TraceParser
 
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.algorithms.moo.nsga2 import NSGA2
@@ -22,8 +27,8 @@ from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 
-class CascadesProblem(ElementwiseProblem):
-    def __init__(self, TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR):
+class CascadeProblem(ElementwiseProblem):
+    def __init__(self, TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR):
         super().__init__(n_var=12, 
                          n_obj=2, 
                          n_constr=0, 
@@ -33,6 +38,7 @@ class CascadesProblem(ElementwiseProblem):
         self.TRACE_DIR = TRACE_DIR
         self.CHIPLET_LIBRARY = CHIPLET_LIBRARY
         self.EXPERIMENT_DIR = EXPERIMENT_DIR
+        self.OUTPUT_DIR = OUTPUT_DIR
 
         self.tp = TraceParser(self.TRACE_DIR, self.EXPERIMENT_DIR)
     
@@ -102,24 +108,24 @@ class CascadesProblem(ElementwiseProblem):
         print("Total Time: %0.5fms" % (total_exe*1000))
         print("Total Energy: %0.5fmJ" % (total_energy*10**3))
 
-        # Write outputs to a file
-        outlist = [total_exe*1000, total_energy*10**3]
-        output_file = os.path.join("chiplet-model/dse/results/points.txt")
-        with open(output_file, "w", newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(outlist)
+        # # Write outputs to a file
+        # outlist = [total_exe*1000, total_energy*10**3]
+        # with open(self.OUTPUT_DIR + "/points.txt", "w", newline='') as f:
+        #     writer = csv.writer(f)
+        #     writer.writerow(outlist)
 
-        return total_exe*1000, total_energy*10**3
+        return float(total_exe*1000), float(total_energy*10**3)
 
-
-
-def runGACascades(pop_size=10, n_gen=5):
-
+def runGACascade(pop_size=10, n_gen=5):
+    """
+    Run the Genetic Algorithm for Cascades.
+    """
     # WORKSPACE='chiplet-server/chiplet-model'
-    WORKSPACE='chiplet-model'
+    WORKSPACE=sys.path[0]+'/cascade/chiplet-model'
     TRACE_DIR=WORKSPACE+'/traces'
     CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
-    EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/sd-test.json'
+    EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/gpt-j-65536-weighted.json' # gpt-j-65536-weighted.json
+    OUTPUT_DIR=WORKSPACE+'/dse/output'
 
     ###################################################
     # hyperparameters for chiplet selection
@@ -130,7 +136,7 @@ def runGACascades(pop_size=10, n_gen=5):
     NUM_CHANNELS = 16   # Max number of Memory Channels
     ###################################################
 
-    problem = CascadesProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR)
+    problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
 
     algorithm = NSGA2(pop_size=pop_size,
                       sampling=IntegerRandomSampling(),
@@ -142,8 +148,9 @@ def runGACascades(pop_size=10, n_gen=5):
                 ("n_gen", n_gen),
                 verbose=True)
 
+    print(res.F)
+
     return res.F
 
 if __name__ == "__main__":
-    # runGACascades(pop_size=64, n_gen=20)
-    runGACascades(pop_size=5, n_gen=5)
+    runGACascade(pop_size=5, n_gen=5)

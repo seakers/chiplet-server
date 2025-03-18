@@ -6,25 +6,30 @@ from .serializers import TaskSerializer
 import random
 
 import sys
-sys.path.append('chiplet-model/dse')
-from gaCascades import runGACascades
+sys.path.append("".join(sys.path[0] + '/cascade/'))
+sys.path.append("".join(sys.path[0] + '/cascade/chiplet-model/'))
+from dse.gaCascade import runGACascade
 
 class DataGenerator:
     def __init__(self):
         self.data = []
+        self.initial = True
 
     def generate_data(self):
-        runGACascades(pop_size=5, n_gen=5)
+        result = runGACascade(pop_size=5, n_gen=5)
+        for row in result:
+            self.data.append({"x": row[0], "y": row[1]})
 
     def get_data(self):
-        try:
-            with open('chiplet-model/dse/results/points.txt', 'r') as file:
-                self.data = []
-                for line in file:
-                    x, y = map(float, line.strip().split(','))
-                    self.data.append({"x": x, "y": y})
-        except FileNotFoundError:
-            self.data = []
+        # try:
+        #     with open(sys.path[0] + '/cascade/chiplet-model/dse/output/out.txt', 'r') as file:
+        #         self.data = []
+        #         for line in file:
+        #             x, y = map(float, line.strip().split(','))
+        #             self.data.append({"x": x, "y": y})
+        # except FileNotFoundError:
+        #     self.data = []
+        return self.data
     
     def clear_data(self):
         self.data = []
@@ -33,7 +38,6 @@ class DataGenerator:
         self.data.append({"x": random.randint(0, 20), "y": random.randint(0, 10)})
    
 dataGenerator = DataGenerator()
-dataGenerator.generate_data()
 
 class TaskViewSet(viewsets.ModelViewSet):
     queryset = Task.objects.all()
@@ -51,6 +55,16 @@ def compute_sum(request):
     
 @api_view(['GET'])
 def get_chart_data(request):
+    """
+    Generate and return chart data.
+    """
+    # Send null data first time
+    if dataGenerator.initial:
+        data = []
+        dataGenerator.initial = False
+        return Response({"data": data})
+    dataGenerator.generate_data()
+
     # Simulate dynamic data
     data = dataGenerator.get_data()
     print(data)

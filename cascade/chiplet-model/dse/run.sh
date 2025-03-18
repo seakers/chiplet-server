@@ -11,7 +11,7 @@ CHIPLET_LIBRARY=$WORKSPACE/dse/chiplet-library
 #EXPERIMENT_DIR=$WORKSPACE/dse/experiments/resnet50-test.json
 #EXPERIMENT_DIR=$WORKSPACE/dse/experiments/ogbn-products-test.json
 #EXPERIMENT_DIR=$WORKSPACE/dse/experiments/gpt-j-65536-weighted.json
-EXPERIMENT_DIR=$WORKSPACE/dse/experiments/sd-test.json
+EXPERIMENT_DIR=$WORKSPACE/cascade/chiplet-model/dse/experiments/sd-test.json
 
 
 python chiplet-model/dse/test_system_eval.py --chiplet-library=$CHIPLET_LIBRARY --trace-dir=$TRACE_DIR --experiment=$EXPERIMENT_DIR
