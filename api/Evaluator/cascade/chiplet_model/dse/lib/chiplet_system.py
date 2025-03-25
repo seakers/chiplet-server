@@ -8,7 +8,7 @@ import statistics
 import numpy as np
 from scipy.optimize import minimize
 
-from dse.lib.shard_kernel import ShardKernel
+from api.Evaluator.cascade.chiplet_model.dse.lib.shard_kernel import ShardKernel
 
 class ChipletSystem:
     def __init__(self, chiplet_library_dir, verbose=1):

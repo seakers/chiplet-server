@@ -1,23 +1,14 @@
-import os
-import time
-import argparse
+import sys
 import matplotlib 
 matplotlib.use('agg')
 
-# Add chiplet_model to the path
-import sys
-sys.path.append("".join(sys.path[0] + '/cascade/'))
-sys.path.append("".join(sys.path[0] + '/cascade/chiplet-model/'))
-
-import statistics
 import numpy as np
-from scipy.optimize import minimize, LinearConstraint
+from scipy.optimize import minimize
 from collections import Counter
-import csv
 
-from dse.lib.plot_results import PlotResults
-from dse.lib.chiplet_system import ChipletSystem
-from dse.lib.trace_parser import TraceParser
+from api.Evaluator.cascade.chiplet_model.dse.lib.plot_results import PlotResults
+from api.Evaluator.cascade.chiplet_model.dse.lib.chiplet_system import ChipletSystem
+from api.Evaluator.cascade.chiplet_model.dse.lib.trace_parser import TraceParser
 
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.algorithms.moo.nsga2 import NSGA2
@@ -121,7 +112,7 @@ def runGACascade(pop_size=10, n_gen=5):
     Run the Genetic Algorithm for Cascades.
     """
     # WORKSPACE='chiplet-server/chiplet-model'
-    WORKSPACE=sys.path[0]+'/cascade/chiplet-model'
+    WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
     TRACE_DIR=WORKSPACE+'/traces'
     CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
     EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/gpt-j-65536-weighted.json' # gpt-j-65536-weighted.json
