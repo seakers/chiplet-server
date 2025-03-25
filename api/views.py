@@ -37,7 +37,10 @@ def get_chart_data(request):
         data = []
         dataGenerator.initial = False
         return Response({"data": data})
-    dataGenerator.generate_data()
+    
+    num1 = int(request.GET.get("num1", 0))
+    num2 = int(request.GET.get("num2", 0))
+    dataGenerator.generate_data(num1, num2)
 
     # Simulate dynamic data
     data = dataGenerator.get_data()

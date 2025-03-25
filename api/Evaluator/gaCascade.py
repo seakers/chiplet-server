@@ -127,6 +127,9 @@ def runGACascade(pop_size=10, n_gen=5):
     NUM_CHANNELS = 16   # Max number of Memory Channels
     ###################################################
 
+    print("Pop Size: ", pop_size)
+    print("Number of Generations: ", n_gen)
+
     problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
 
     algorithm = NSGA2(pop_size=pop_size,

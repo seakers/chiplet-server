@@ -6,8 +6,10 @@ class DataGenerator:
         self.data = []
         self.initial = True
 
-    def generate_data(self):
-        result = runGACascade(pop_size=5, n_gen=5)
+    def generate_data(self, pop_size=0, n_gen=0):
+        result = []
+        if not pop_size == 0 and not n_gen == 0:
+            result = runGACascade(pop_size=pop_size, n_gen=n_gen)
         for row in result:
             self.data.append({"x": row[0], "y": row[1]})
 
