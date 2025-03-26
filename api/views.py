@@ -44,7 +44,7 @@ def get_chart_data(request):
 
     # Simulate dynamic data
     data = dataGenerator.get_data()
-    print(data)
+    print("Data Points: ", data)
     return Response({"data": data})
 
 @api_view(["GET"])
