@@ -38,9 +38,10 @@ def get_chart_data(request):
         dataGenerator.initial = False
         return Response({"data": data})
     
-    num1 = int(request.GET.get("num1", 0))
-    num2 = int(request.GET.get("num2", 0))
-    dataGenerator.generate_data(num1, num2)
+    pop_size = int(request.GET.get("pop_size", 0))
+    n_gen = int(request.GET.get("n_gen", 0))
+    trace = request.GET.get("trace", "")
+    dataGenerator.generate_data(pop_size=pop_size, n_gen=n_gen, trace=trace)
 
     # Simulate dynamic data
     data = dataGenerator.get_data()

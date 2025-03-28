@@ -107,16 +107,24 @@ class CascadeProblem(ElementwiseProblem):
 
         return float(total_exe*1000), float(total_energy*10**3)
 
-def runGACascade(pop_size=10, n_gen=5):
+def runGACascade(pop_size=10, n_gen=5, trace=""):
     """
     Run the Genetic Algorithm for Cascades.
     """
+    if trace == "":
+        print("No trace provided.")
+        print("Selecting a random trace.")
+        trace = "gpt-j-65536-weighted"
     # WORKSPACE='chiplet-server/chiplet-model'
     WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
     TRACE_DIR=WORKSPACE+'/traces'
     CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
-    EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/gpt-j-65536-weighted.json' # gpt-j-65536-weighted.json
+    EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/'+trace+'.json' # gpt-j-65536-weighted.json
     OUTPUT_DIR=WORKSPACE+'/dse/output'
+
+    traces_available = ["gpt-j-65536-weighted", "gpt-j-1024-weighted", "sd-test", "dnn-test", "resnet50-test"]
+
+    print("experiment being performed: ", EXPERIMENT_DIR)
 
     ###################################################
     # hyperparameters for chiplet selection
@@ -146,5 +154,5 @@ def runGACascade(pop_size=10, n_gen=5):
 
     return res.F
 
-if __name__ == "__main__":
-    runGACascade(pop_size=5, n_gen=5)
+# if __name__ == "__main__":
+#     runGACascade(pop_size=5, n_gen=5)
