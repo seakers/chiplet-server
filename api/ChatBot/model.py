@@ -43,3 +43,7 @@ class ChatBotModel():
         )
 
         return completion.choices[0].message.content
+    
+    def clear_history(self):
+        self.messages = []
+        self.messages = self._specs.copy()

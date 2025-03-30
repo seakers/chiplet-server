@@ -1,5 +1,5 @@
 import random
-from api.Evaluator.gaCascade import runGACascade
+from api.Evaluator.gaCascade import runGACascade, runSingleCascade
 
 class DataGenerator:
     def __init__(self):
@@ -19,5 +19,6 @@ class DataGenerator:
     def clear_data(self):
         self.data = []
     
-    def add_random_data(self):
-        self.data.append({"x": random.randint(0, 20), "y": random.randint(0, 10)})
+    def evaluate_point(self, chiplets, trace):
+        objectives = runSingleCascade(chiplets, trace)
+        self.data.append({"x": objectives[0], "y": objectives[1]})

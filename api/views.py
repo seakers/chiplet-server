@@ -57,3 +57,32 @@ def get_chat_response(request):
     role = request.GET.get("role")
     response = chat_bot.get_response(content, role)
     return Response({"response": response})
+
+@api_view(["POST"])
+def clear_chat(request):
+    """
+    Clear the chat history in the chatbot.
+    """
+    chat_bot.clear_history()
+    return Response({"message": "Chat history cleared successfully."})
+
+@api_view(["GET"])
+def evaluate_point(request):
+    """
+    Evaluate a point using the DataGenerator.
+    """
+    print("Made it to the evaluate_point function")
+    try:
+        chipletKeys = request.GET.getlist("chiplets[]")
+        trace = request.GET.get("trace")
+        print("Chiplets:", chipletKeys)
+        print("Trace:", trace)
+        chiplets = {}
+        for key in chipletKeys:
+            chiplets[key] = chiplets.get(key, 0) + 1
+                 
+        dataGenerator.evaluate_point(chiplets, trace)
+        data = dataGenerator.get_data()
+        return Response({"data": data})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)

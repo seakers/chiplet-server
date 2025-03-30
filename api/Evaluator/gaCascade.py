@@ -154,5 +154,83 @@ def runGACascade(pop_size=10, n_gen=5, trace=""):
 
     return res.F
 
+def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace=""):
+    """
+    Run a single instance of the Cascade model.
+    """
+    if trace == "":
+        print("No trace provided.")
+        print("Selecting a random trace.")
+        trace = "gpt-j-65536-weighted"
+    WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+    TRACE_DIR = WORKSPACE + '/traces'
+    CHIPLET_LIBRARY = WORKSPACE + '/dse/chiplet-library'
+    EXPERIMENT_DIR = WORKSPACE + '/dse/experiments/' + trace + '.json'
+    OUTPUT_DIR = WORKSPACE + '/dse/output'
+
+    print("Running single cascade for trace: ", EXPERIMENT_DIR)
+
+    TRACE_DIR = TRACE_DIR
+    CHIPLET_LIBRARY = CHIPLET_LIBRARY
+    EXPERIMENT_DIR = EXPERIMENT_DIR
+    OUTPUT_DIR = OUTPUT_DIR
+
+    tp = TraceParser(TRACE_DIR, EXPERIMENT_DIR)
+
+    # desired_chiplets = ["gpu"] * numChips[0] + ["atten"] * numChips[1] + ["sparse"] * numChips[2] + ["conv"] * numChips[3]
+    desired_chiplets = ["gpu"] * chiplets["GPU"] + ["atten"] * chiplets["Attention"] + ["sparse"] * chiplets["Sparse"] + ["conv"] * chiplets["Convolution"]
+    numChannels = 16 # can be changed to be a variable
+    agg_kernel_results = []
+
+    for TRACE_ID in range(len(tp.all_traces)):
+        tp.all_traces[TRACE_ID].print_line()
+        print("Working on Trace %i" % TRACE_ID)
+
+        # create SoC and add chiplets to SoC
+        cs = ChipletSystem(CHIPLET_LIBRARY, verbose=0)
+        cs.configure_system(desired_chiplets, tp.optimization_goal)
+        cs.init_system_bandwidth(bw_per_channel=64, num_channels=numChannels)
+        # valid = cs.check_valid_system(self.tp.get_trace(TRACE_ID))
+        # if not valid == -1:
+        kernel_results = cs.characterize_workload(tp.get_trace(TRACE_ID), cut_dim="batch" if tp.all_traces[TRACE_ID].get_model() == "dnn" else "weights", dtype=2)
+        agg_kernel_results += kernel_results * tp.all_traces[TRACE_ID].weighted_score # sudo run the workload "weighted_score" times
+
+    # total_exe, total_energy = getTimeAndEnergy(agg_kernel_results, cs.get_num_chiplets())
+    num_chiplets = cs.get_num_chiplets()
+
+    kernel_names = [] 
+    kernel_exe = []
+    kernel_energy = []
+    kernel_work = {}
+    kernel_breakdown = {}
+    chiplet_names = []
+    for chiplet_id in range(num_chiplets):
+        kernel_work[chiplet_id] = []
+        chiplet_names.append("")
+
+    for kernel in agg_kernel_results:
+        for chiplet_id in range(num_chiplets):
+            if chiplet_id in kernel["chiplets"].keys(): # chiplet participated 
+                kernel_work[chiplet_id].append(kernel["chiplets"][chiplet_id]["work"])
+                chiplet_names[chiplet_id] = kernel["chiplets"][chiplet_id]["name"]
+            else: # chiplet did not participate
+                kernel_work[chiplet_id].append(0)
+        kernel_exe.append(kernel["total"]["exe_time"])
+        kernel_energy.append(kernel["total"]["energy"] )
+
+        if kernel["name"] not in kernel_breakdown:
+            kernel_breakdown[kernel["name"]] = 0
+        kernel_breakdown[kernel["name"]] += kernel["total"]["exe_time"]
+        kernel_names.append(kernel["name"])
+    
+    # normalize kernel_work
+    total_exe = sum(kernel_exe)
+    total_energy = sum(kernel_energy)
+
+    print("Total Time: %0.5fms" % (total_exe*1000))
+    print("Total Energy: %0.5fmJ" % (total_energy*10**3))
+
+    return float(total_exe*1000), float(total_energy*10**3)
+
 # if __name__ == "__main__":
 #     runGACascade(pop_size=5, n_gen=5)
