@@ -56,6 +56,20 @@ class CascadeProblem(ElementwiseProblem):
         # if total_exe == 0 or total_energy == 0:
         #     out["F"] = [10e6, 10e6]
         # else:
+
+        context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.txt"
+        with open(context_file, "w") as f:
+            for result in agg_kernel_results:
+                result_copy = {key: value for key, value in result.items() if key != "chiplets"}
+                result_copy["total"] = {key: f"{value:.1e}" for key, value in result_copy["total"].items()}
+                f.write(str(result_copy) + "\n")
+        print(f"Results saved to {context_file}")
+
+        result_file = self.OUTPUT_DIR + "/points.csv"
+        with open(result_file, "a") as f:
+            f.write(f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]}\n")
+        print(f"Summary saved to {result_file}")
+
         out["F"] = [total_exe, total_energy]
 
     def getTimeAndEnergy(self, kernel_results, num_chiplets):
@@ -120,7 +134,7 @@ def runGACascade(pop_size=10, n_gen=5, trace=""):
     TRACE_DIR=WORKSPACE+'/traces'
     CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
     EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/'+trace+'.json' # gpt-j-65536-weighted.json
-    OUTPUT_DIR=WORKSPACE+'/dse/output'
+    OUTPUT_DIR=WORKSPACE+'/dse/results'
 
     traces_available = ["gpt-j-65536-weighted", "gpt-j-1024-weighted", "sd-test", "dnn-test", "resnet50-test"]
 
@@ -166,7 +180,7 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     TRACE_DIR = WORKSPACE + '/traces'
     CHIPLET_LIBRARY = WORKSPACE + '/dse/chiplet-library'
     EXPERIMENT_DIR = WORKSPACE + '/dse/experiments/' + trace + '.json'
-    OUTPUT_DIR = WORKSPACE + '/dse/output'
+    OUTPUT_DIR = WORKSPACE + '/dse/results'
 
     print("Running single cascade for trace: ", EXPERIMENT_DIR)
 
@@ -194,6 +208,7 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
         # if not valid == -1:
         kernel_results = cs.characterize_workload(tp.get_trace(TRACE_ID), cut_dim="batch" if tp.all_traces[TRACE_ID].get_model() == "dnn" else "weights", dtype=2)
         agg_kernel_results += kernel_results * tp.all_traces[TRACE_ID].weighted_score # sudo run the workload "weighted_score" times
+
 
     # total_exe, total_energy = getTimeAndEnergy(agg_kernel_results, cs.get_num_chiplets())
     num_chiplets = cs.get_num_chiplets()
@@ -224,13 +239,27 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
         kernel_names.append(kernel["name"])
     
     # normalize kernel_work
-    total_exe = sum(kernel_exe)
-    total_energy = sum(kernel_energy)
+    total_exe = sum(kernel_exe)*1000
+    total_energy = sum(kernel_energy)*10**3
 
-    print("Total Time: %0.5fms" % (total_exe*1000))
-    print("Total Energy: %0.5fmJ" % (total_energy*10**3))
+    print("Total Time: %0.5fms" % (total_exe))
+    print("Total Energy: %0.5fmJ" % (total_energy))
 
-    return float(total_exe*1000), float(total_energy*10**3)
+    results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.txt"
+    with open(results_file, "w") as f:
+        for result in agg_kernel_results:
+            result_copy = {key: value for key, value in result.items() if key != "chiplets"}
+            result_copy["total"] = {key: f"{value:.1e}" for key, value in result_copy["total"].items()}
+            f.write(str(result_copy) + "\n")
+    print(f"Results saved to {results_file}")
+
+    result_file = OUTPUT_DIR + "/points.csv"
+    with open(result_file, "a") as f:
+        f.write(f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n")
+    print(f"Summary saved to {result_file}")
+
+    return float(total_exe), float(total_energy)
 
 # if __name__ == "__main__":
-#     runGACascade(pop_size=5, n_gen=5)
+    # runGACascade(pop_size=5, n_gen=5)
+    # execTime, energy = runSingleCascade(chiplets={"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="gpt-j-65536-weighted")

@@ -45,6 +45,12 @@ def get_chart_data(request):
 
     # Simulate dynamic data
     data = dataGenerator.get_data()
+    # print("Data Points: ", data)
+    return Response({"data": data})
+
+@api_view(["GET"])
+def update_data(request):
+    data = dataGenerator.get_data()
     print("Data Points: ", data)
     return Response({"data": data})
 
@@ -86,3 +92,31 @@ def evaluate_point(request):
         return Response({"data": data})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+    
+@api_view(["GET"])
+def add_info(request):
+    """
+    Add information to the chatbot.
+    """
+    exe = request.GET.get("exe")
+    energy = request.GET.get("energy")
+    gpu = request.GET.get("gpu")
+    attn = request.GET.get("attn")
+    sparse = request.GET.get("sparse")
+    conv = request.GET.get("conv")
+
+    content = f"The design is evaluated to have an energy of {energy} and an execution time of {exe}.\n"
+    content += f"The design has {gpu} GPU chiplets, {attn} attention chiplets, {sparse} sparse chiplets, and {conv} convolution chiplets.\n"
+
+    chiplet_file_path = f"/home/snaggerdoodle/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results/pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.txt"
+    try:
+        with open(chiplet_file_path, "r") as file:
+            content += file.read()
+    except FileNotFoundError:
+        return Response({"error": "Chiplet file not found."}, status=404)
+
+    role = "developer"
+    chat_bot.add_information(content, role)
+
+    chat_bot.add_information("I have received context on this design! I am ready to answer questions about it.", "assistant")
+    return Response({"message": "Information added successfully."})

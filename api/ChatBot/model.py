@@ -15,7 +15,11 @@ class ChatBotModel():
         self._specs = [
             {
                 "role": "developer",
-                "content": "You are a helpful assistant. You respond precisely to user queries, with just a few words."
+                "content": "You are an expert in chiplet design and optimization. " + 
+                           "Designs are made up of several chiplets, and the different numbers of different kinds of chiplets " +
+                           "give different performance charactaristics. Designs are primarily evaluated based on " +
+                           "performance and power consumption for a given trace. You are to help the user design a chiplet based on " +
+                           "the information you are provided."
             }
         ] if specs is None else specs
 
@@ -30,11 +34,12 @@ class ChatBotModel():
                 "content": content
             }
         )
-        print(self.messages)
+        # print(self.messages)
         completion = self._client.chat.completions.create(
             model=self._model,
             messages=self.messages
         )
+        print(completion.choices[0].message.content)
         self.messages.append(
             {
                 "role": completion.choices[0].message.role,
@@ -43,6 +48,14 @@ class ChatBotModel():
         )
 
         return completion.choices[0].message.content
+    
+    def add_information(self, content, role="developer"):
+        self.messages.append(
+            {
+                "role": role,
+                "content": content
+            }
+        )
     
     def clear_history(self):
         self.messages = []

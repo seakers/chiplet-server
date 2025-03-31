@@ -2,6 +2,7 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+import glob
 
 
 def main():
@@ -19,4 +20,22 @@ def main():
 
 
 if __name__ == '__main__':
+    # clear data
+    # Clear all files in the specified directory
+    point_context_dir = "api/Evaluator/cascade/chiplet_model/dse/results/pointContext"
+    files = glob.glob(os.path.join(point_context_dir, "*"))
+    for file in files:
+        try:
+            os.remove(file)
+        except Exception as e:
+            print(f"Error deleting file {file}: {e}")
+
+    # Clear the points.csv file
+    points_csv_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+    try:
+        with open(points_csv_path, "w") as file:
+            file.truncate(0)
+    except Exception as e:
+        print(f"Error clearing file {points_csv_path}: {e}")
+        
     main()

@@ -1,5 +1,6 @@
 import random
 from api.Evaluator.gaCascade import runGACascade, runSingleCascade
+import csv
 
 class DataGenerator:
     def __init__(self):
@@ -14,7 +15,23 @@ class DataGenerator:
             self.data.append({"x": row[0], "y": row[1]})
 
     def get_data(self):
-        return self.data
+        file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+        with open(file_path, mode='r') as file:
+            csv_reader = csv.reader(file)
+            csvData = [
+            {
+                "x": float(row[0]),
+                "y": float(row[1]),
+                "gpu": float(row[2]),
+                "attn": float(row[3]),
+                "sparse": float(row[4]),
+                "conv": float(row[5])
+            }
+            for row in csv_reader
+            ]
+        # print("CSV Data: ", csvData)
+        return csvData
+        # return self.data
     
     def clear_data(self):
         self.data = []
