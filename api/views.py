@@ -108,7 +108,7 @@ def add_info(request):
     content = f"The design is evaluated to have an energy of {energy} and an execution time of {exe}.\n"
     content += f"The design has {gpu} GPU chiplets, {attn} attention chiplets, {sparse} sparse chiplets, and {conv} convolution chiplets.\n"
 
-    chiplet_file_path = f"/home/snaggerdoodle/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results/pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.txt"
+    chiplet_file_path = f"./api/Evaluator/cascade/chiplet_model/dse/results/pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.txt"
     try:
         with open(chiplet_file_path, "r") as file:
             content += file.read()
