@@ -92,6 +92,31 @@ def evaluate_point(request):
         return Response({"data": data})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
+@api_view(["GET"])
+def evaluate_point_inputs(request):
+    """
+    Evaluate a point using the DataGenerator.
+    """
+    print("Made it to the evaluate_point_inputs function")
+    try:
+        trace = request.GET.get("trace")
+
+        chiplets = {
+            "Attention": int(request.GET.get("Attention", 0)),
+            "GPU": int(request.GET.get("GPU", 0)),
+            "Sparse": int(request.GET.get("Sparse", 0)),
+            "Convolution": int(request.GET.get("Convolution", 0)),
+        }
+
+        print("Chiplets:", chiplets)
+        print("Trace:", trace)
+
+        dataGenerator.evaluate_point(chiplets, trace)
+        data = dataGenerator.get_data()
+        return Response({"data": data})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
     
 @api_view(["GET"])
 def add_info(request):
