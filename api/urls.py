@@ -6,6 +6,7 @@ from .views import get_chart_data
 from .views import get_chat_response
 from .views import clear_chat
 from .views import evaluate_point
+from .views import evaluate_point_inputs
 from .views import add_info
 from .views import update_data
 
@@ -19,5 +20,6 @@ urlpatterns = [
     path("chat-response/", get_chat_response, name="chat_response"),
     path("clear-chat/", clear_chat, name="clear_chat"),
     path("evaluate-point/", evaluate_point, name="evaluate_point"),
+    path("evaluate-point-inputs/", evaluate_point_inputs, name="evaluate_point_inputs"),
     path("add-info/", add_info, name="add_info"),
 ] + router.urls
