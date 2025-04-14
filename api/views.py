@@ -123,25 +123,27 @@ def add_info(request):
     """
     Add information to the chatbot.
     """
+    # print("Made it to the add_info function")
     exe = request.GET.get("exe")
     energy = request.GET.get("energy")
     gpu = request.GET.get("gpu")
     attn = request.GET.get("attn")
     sparse = request.GET.get("sparse")
     conv = request.GET.get("conv")
-
     content = f"The design is evaluated to have an energy of {energy} and an execution time of {exe}.\n"
     content += f"The design has {gpu} GPU chiplets, {attn} attention chiplets, {sparse} sparse chiplets, and {conv} convolution chiplets.\n"
-
-    chiplet_file_path = f"./api/Evaluator/cascade/chiplet_model/dse/results/pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.txt"
-    try:
-        with open(chiplet_file_path, "r") as file:
-            content += file.read()
-    except FileNotFoundError:
-        return Response({"error": "Chiplet file not found."}, status=404)
-
-    role = "developer"
-    chat_bot.add_information(content, role)
-
-    chat_bot.add_information("I have received context on this design! I am ready to answer questions about it.", "assistant")
+    chiplet_file_path = f"api/Evaluator/cascade/chiplet_model/dse/results/pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+    # try:
+    #     with open(chiplet_file_path, "r") as file:
+    #         content += file.read()
+    # except FileNotFoundError:
+    #     return Response({"error": "Chiplet file not found."}, status=404)
+    chat_bot.add_information(chiplet_file_path)
+    # chat_bot.add_information("I have received context on this design! I am ready to answer questions about it.", "assistant")
+    chat_bot.messages.append(
+        {
+            "role": "assistant",
+            "content": "I have received context on this design! I am ready to answer questions about it."
+        }
+    )
     return Response({"message": "Information added successfully."})

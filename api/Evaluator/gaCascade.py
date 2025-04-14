@@ -17,6 +17,8 @@ from pymoo.operators.repair.rounding import RoundingRepair
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
+import json
+from copy import deepcopy
 
 class CascadeProblem(ElementwiseProblem):
     def __init__(self, TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR):
@@ -57,12 +59,14 @@ class CascadeProblem(ElementwiseProblem):
         #     out["F"] = [10e6, 10e6]
         # else:
 
-        context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.txt"
+        context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
         with open(context_file, "w") as f:
-            for result in agg_kernel_results:
-                result_copy = {key: value for key, value in result.items() if key != "chiplets"}
-                result_copy["total"] = {key: f"{value:.1e}" for key, value in result_copy["total"].items()}
-                f.write(str(result_copy) + "\n")
+            jsonData = []
+            for ind, result in enumerate(agg_kernel_results):
+                resultCopy = deepcopy(result)
+                resultCopy["kernal_number"] = ind
+                jsonData.append(resultCopy)
+            json.dump(jsonData, f, indent=4)
         print(f"Results saved to {context_file}")
 
         result_file = self.OUTPUT_DIR + "/points.csv"
@@ -245,12 +249,14 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     print("Total Time: %0.5fms" % (total_exe))
     print("Total Energy: %0.5fmJ" % (total_energy))
 
-    results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.txt"
+    results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
     with open(results_file, "w") as f:
-        for result in agg_kernel_results:
-            result_copy = {key: value for key, value in result.items() if key != "chiplets"}
-            result_copy["total"] = {key: f"{value:.1e}" for key, value in result_copy["total"].items()}
-            f.write(str(result_copy) + "\n")
+        jsonData = []
+        for ind,result in enumerate(agg_kernel_results):
+            resultCopy = deepcopy(result)
+            resultCopy["kernal_number"] = ind
+            jsonData.append(resultCopy)
+        json.dump(jsonData, f, indent=4)
     print(f"Results saved to {results_file}")
 
     result_file = OUTPUT_DIR + "/points.csv"
