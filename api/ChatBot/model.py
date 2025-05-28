@@ -4,6 +4,9 @@ from openai import OpenAI
 import json
 import csv
 import numpy as np
+from dcor import distance_correlation
+from collections import Counter
+from copy import deepcopy
 
 dotenv.load_dotenv()
 
@@ -82,7 +85,9 @@ class ChatBotModel():
             "Where are the best designs?",
             "Why is this design not optimal?",
             "What are some common features of the Pareto front?",
-            "Based on the existing Pareto front, can you propose a new design?"
+            "Based on the existing Pareto front, can you propose a new design?",
+            "Can you tell me about how design features relate to performance?",
+            "Are there any general rules which imply a good design?"
         ]
 
         self.pareto_front_questions = {}
@@ -145,7 +150,7 @@ class ChatBotModel():
             pareto_similarity = self.cosine_similarity(content_embedding, self.pareto_front_questions[question])
             print(f"Question: {question}")
             print(f"Pareto similarity: {pareto_similarity}")
-            if pareto_similarity > 0.7:
+            if pareto_similarity > 0.6:
                 print("Adding pareto context.")
                 self.add_pareto_context()
                 break
@@ -249,45 +254,61 @@ class ChatBotModel():
 
         return message
 
-        
 
     def add_pareto_context(self):
         file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
             full_data = []
-            point_vals = []
-            for row in csv_reader:
-                point_vals.append([float(row[0]), float(row[1])])
+            for row in csv_reader:         
                 full_data.append(
-                    {
-                        "exe_time": float(row[0]),
-                        "energy": float(row[1]),
-                        "chiplets": {
-                            "GPU": int(row[2]),
-                            "Attention": int(row[3]),
-                            "Sparse": int(row[4]),
-                            "Convolution": int(row[5])
-                        }
-                    }
+                    json.dumps(
+                        {
+                            "exe_time": float(row[0]),
+                            "energy": float(row[1]),
+                            "chiplets": {
+                                "GPU": int(row[2]),
+                                "Attention": int(row[3]),
+                                "Sparse": int(row[4]),
+                                "Convolution": int(row[5])
+                            }
+                        },
+                        sort_keys=True
+                    )
                 )
+        full_data = [json.loads(item) for item in set(full_data)]  # convert to set to remove duplicates, then back to list and parse JSON items to dict
+
+        point_vals = []
+        design_vals = []
+        for data in full_data:
+            point_vals.append([data["exe_time"], data["energy"]])
+            design_vals.append([data["chiplets"]["GPU"], data["chiplets"]["Attention"],
+                                data["chiplets"]["Sparse"], data["chiplets"]["Convolution"]])
+
+        point_vals = np.array(point_vals)
+        design_vals = np.array(design_vals)
 
         pfront_data = []
         prank = 0
-        point_vals = np.array(point_vals)
+        point_vals_copy = deepcopy(point_vals)
         print(f"Full data: {full_data}")
         # print(f"Point vals: {point_vals}")
-        while len(point_vals) > 0:
-            pfront_mask = self.is_pareto_efficient(point_vals)
-            next_prank = point_vals[pfront_mask]
+        while len(point_vals_copy) > 0:
+            pfront_mask = self.is_pareto_efficient(point_vals_copy)
+            next_prank = point_vals_copy[pfront_mask]
             pfront_data.extend(next_prank)
-            point_vals = point_vals[~pfront_mask]
+            point_vals_copy = point_vals_copy[~pfront_mask]
             for data in full_data:
                 if [data["exe_time"], data["energy"]] in next_prank:
                     data["rank"] = prank
             prank += 1
 
         print(f"Pareto front data: {full_data}")
+
+        distance_correlation_str = self.get_distance_correlations(point_vals, design_vals)
+
+        rule_mining_str = self.rule_mining()
+
         self.messages.append(
             {
                 "role": "user",
@@ -296,9 +317,165 @@ class ChatBotModel():
                            "(GPU, Attention, Sparse, Convolution). The number of each kind of chiplet are the design variables, " +
                            "but there are always twelve chiplets in total. " + 
                            "When answering questions, keep your responses as concise as possible and do not restate things I already know. \n" +
-                           f"{str(full_data)}"
+                           f"{str(full_data)}\n" + 
+                           "In addition, here are the distance correlation numbers between each objective and the number of each type of chiplet:\n" + 
+                           distance_correlation_str + 
+                           rule_mining_str
             }
         )
+
+
+    def get_distance_correlations(self, objective_vals, design_vals):
+        objectives = ["exe_time", "energy"]
+        chiplets = ["GPU", "Attention", "Sparse", "Convolution"]
+        dist_corr_str = ""
+
+        for obj_ind, obj in enumerate(objectives):
+            for chiplet_ind, chiplet in enumerate(chiplets):
+                obj_vals = np.array(objective_vals[:, obj_ind], dtype=float)
+                des_vals = np.array(design_vals[:, chiplet_ind], dtype=float)
+                dist_corr = distance_correlation(obj_vals, des_vals)
+                dist_corr_str = dist_corr_str + f"Distance correlation between objective {obj} and chiplet type {chiplet} is {dist_corr:.4f}.\n"
+
+        print("Distance Correlation String: ", dist_corr_str, "\n\n")
+        return dist_corr_str
+    
+
+    def rule_mining(self, point_selection=None):
+        """
+        find combinations of features which have high supp and are on the pareto front of
+        conf(f->p) and conf(p->f)
+        where f are combinations of features and p is a selected set of values
+        p will usually be the first few ranks of the pareto front but can also be user selected points
+        features are, for each chiplet type
+        num = 0 (none)
+        1 <= num <= 2 (low)
+        3 <= num <= 5 (medium)
+        6 <= num <= 8 (high)
+        num >= 9 (very high)
+        """
+        file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+        with open(file_path, mode='r') as file:
+            csv_reader = csv.reader(file)
+            full_data = []
+            for row in csv_reader:         
+                full_data.append(
+                    (float(row[0]), float(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]))  # exe_time, energy, GPU, Attention, Sparse, Convolution
+                )
+        full_data = np.array(list(set(full_data)))
+        
+        point_vals = full_data[:, :2]  # exe_time, energy
+        max_vals = np.max(point_vals, axis=0)*1.1 + 1e-6  # add a small value to avoid division by zero
+
+        prank = 0
+        prank_array = np.zeros(len(full_data), dtype=int)  # to store the rank of each point
+        while np.min(point_vals[:,0]) < max_vals[0]:
+            pfront_mask = self.is_pareto_efficient(point_vals)
+            point_vals[pfront_mask] = max_vals # remove the pareto front points from the point_vals
+            prank_array[pfront_mask] = prank
+            prank += 1
+        full_data = np.hstack((full_data, prank_array.reshape(-1, 1)))
+
+        if point_selection is None: # get the first three ranks of the pareto front
+            point_selection = full_data[full_data[:, -1] < 3]  # select the first three ranks of the pareto front
+
+
+        feature_list = ["none", "low", "medium", "high", "very high"]
+        chiplet_list = ["GPU", "Attention", "Sparse", "Convolution"]
+        rules_dict = {}
+        for feature in feature_list:
+            for chip_ind, chiplet in enumerate(chiplet_list):
+                if feature == "none":
+                    rule_points = full_data[full_data[:, chip_ind + 2] == 0]  # +2 because first two columns are exe_time and energy
+                elif feature == "low":
+                    rule_points = full_data[(full_data[:, chip_ind + 2] >= 1) & (full_data[:, chip_ind + 2] <= 2)]
+                elif feature == "medium":
+                    rule_points = full_data[(full_data[:, chip_ind + 2] >= 3) & (full_data[:, chip_ind + 2] <= 5)]
+                elif feature == "high":
+                    rule_points = full_data[(full_data[:, chip_ind + 2] >= 6) & (full_data[:, chip_ind + 2] <= 8)]
+                elif feature == "very high":
+                    rule_points = full_data[full_data[:, chip_ind + 2] >= 9]
+                rules_dict[f"{chiplet}_{feature}"] = rule_points
+        pfront_rules = []
+        pfront_costs = np.array([]).reshape(0, 2)  # to store the pareto front costs conf(f->p) and conf(p->f)
+        pfront_lifts = np.array([]).reshape(0, 1)  # to store the lift of the rules
+        base_rule = set()
+        new_pfront_rules, new_pfront_costs, new_pfront_lifts = self.add_rules(rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data)
+
+        # print(f"Number of rules found: {len(new_pfront_rules)}")
+
+        rule_mining_str = "Rules were defined for each design as a certain range of each type of chiplet. The ranges are as follows:\n" + \
+            "num = 0 (none), \n1 <= num <= 2 (low), \n3 <= num <= 5 (medium), \n6 <= num <= 8 (high), \nnum >= 9 (very high)\n\n" + \
+            "The prevelance of these rules were compared to the first three ranks of the pareto front. Given is the best combinations of rules " + \
+            "which have high conf(f->p) (which is the confidence that a combination of rules implies being in the first three ranks of the pareto front) " + \
+            "and conf(p->f) (which is the confidence that being on the pareto front implies a combination of rules). Also included is the lift, which is " + \
+            "a ratio of how often the rule combination and the pareto front coincide to how often they would if they were independant.\n\n"
+        for i, rule_set in enumerate(new_pfront_rules):
+            rule_str = " AND ".join(rule_set)
+            rule_mining_str += f"Rule: {rule_str}, conf(f->p): {new_pfront_costs[i,0]}, conf(p->f): {new_pfront_costs[i,1]}, lift: {new_pfront_lifts[i]}\n\n"
+            # print(f"Rule: {rule_str}\n Confidence(f->p): {new_pfront_costs[i,0]}, Confidence(p->f): {new_pfront_costs[i,1]}")
+
+        print(f"Rule mining string: {rule_mining_str}")
+        return rule_mining_str
+
+    def add_rules(self, rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data):
+        """
+        Iteratively add rules where the combination of rules has
+        high support and is on the pareto front of
+        conf(f->p) and conf(p->f)
+        """
+
+        prev_pfront_rules = deepcopy(pfront_rules)
+
+        if len(pfront_rules) == 0:
+            new_rules, pfront_rules, pfront_costs, pfront_lifts = self.find_confidences(rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data)
+        else:
+            for rule_set in pfront_rules:
+                new_rules, pfront_rules, pfront_costs, pfront_lifts = self.find_confidences(rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, rule_set, full_data)
+        
+        pfront_mask = self.is_pareto_efficient(-pfront_costs, return_mask=True) # minus because we want to maximize the confidence values
+        pfront_costs = pfront_costs[pfront_mask]
+        pfront_lifts = pfront_lifts[pfront_mask]
+        new_pfront_rules = [pfront_rules[i] for i in range(len(pfront_rules)) if pfront_mask[i]]
+        # print(f"New pareto front rules: {new_pfront_rules}")
+        # print(f"New pareto front costs: {pfront_costs}\n")
+        if new_pfront_rules == prev_pfront_rules:
+            return new_pfront_rules, pfront_costs, pfront_lifts
+        new_pfront_rules, pfront_costs, pfront_lifts = self.add_rules(rules_dict, point_selection, new_pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data)
+        return new_pfront_rules, pfront_costs, pfront_lifts
+    
+    def find_confidences(self, rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data):
+        min_supp = 0.05
+        new_rules = 0
+            
+        for rule in rules_dict:
+            new_rule = deepcopy(base_rule)
+            new_rule.add(rule)
+            if new_rule not in pfront_rules: # dont calculate for duplicate rule sets
+                rule_points_all = [set(map(tuple, rules_dict[rules])) for rules in new_rule]
+                rule_point_set = np.array(list(set.intersection(*rule_points_all)))
+
+                p_and_f = []
+                for point in rule_point_set:
+                    if any(np.equal(point, point_selection).all(axis=1)):  # check if point is in point_selection
+                        p_and_f.append(point)
+                len_p_and_f = len(p_and_f)
+                if len_p_and_f == 0:
+                    continue
+                # check if support is high enough
+                rule_support = len_p_and_f / len(full_data)
+                if rule_support >= min_supp:
+                    # get the confidence of p to f and f to p
+                    conf_p_to_f = len_p_and_f / len(point_selection)
+                    conf_f_to_p = len_p_and_f / len(rule_point_set)
+
+                    pfront_costs = np.vstack((pfront_costs, np.array([conf_p_to_f, conf_f_to_p])))
+                    pfront_rules.append(new_rule)
+                    pfront_lifts = np.vstack((pfront_lifts, len_p_and_f * len(full_data)/ (len(point_selection) * len(rule_point_set))))
+
+                    new_rules += 1
+
+        return new_rules, pfront_rules, pfront_costs, pfront_lifts
 
     def is_pareto_efficient(self, costs, return_mask = True):
         """
