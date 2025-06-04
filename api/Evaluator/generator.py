@@ -8,9 +8,11 @@ class DataGenerator:
         self.initial = True
 
     def generate_data(self, pop_size=0, n_gen=0, trace=""):
+        print(f"generate_data called with pop_size={pop_size}, n_gen={n_gen}, trace={trace}")
         result = []
         if not pop_size == 0 and not n_gen == 0:
             result = runGACascade(pop_size=pop_size, n_gen=n_gen, trace=trace)
+        print("GA result:", result)
         for row in result:
             self.data.append({"x": row[0], "y": row[1]})
 

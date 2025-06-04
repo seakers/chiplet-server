@@ -7,6 +7,8 @@ from .serializers import TaskSerializer
 import random
 from api.Evaluator.generator import DataGenerator
 from api.ChatBot.model import ChatBotModel
+import dcor
+import numpy as np
 
 ################ Instantiate the necessary objects ################
 dataGenerator = DataGenerator()
@@ -29,23 +31,14 @@ def compute_sum(request):
     
 @api_view(["GET"])
 def get_chart_data(request):
-    """
-    Generate and return chart data.
-    """
-    # Send null data first time
-    if dataGenerator.initial:
-        data = []
-        dataGenerator.initial = False
-        return Response({"data": data})
-    
+    print("get_chart_data called")
     pop_size = int(request.GET.get("pop_size", 0))
     n_gen = int(request.GET.get("n_gen", 0))
     trace = request.GET.get("trace", "")
+    print(f"Params: pop_size={pop_size}, n_gen={n_gen}, trace={trace}")
     dataGenerator.generate_data(pop_size=pop_size, n_gen=n_gen, trace=trace)
-
-    # Simulate dynamic data
     data = dataGenerator.get_data()
-    # print("Data Points: ", data)
+    print("Data after GA:", data)
     return Response({"data": data})
 
 @api_view(["GET"])
@@ -147,3 +140,66 @@ def add_info(request):
         }
     )
     return Response({"message": "Information added successfully."})
+
+@api_view(["GET"])
+def rule_mining(request):
+    """
+    Run rule mining and return the results in a structured format for the frontend table.
+    """
+    import time
+    print("[rule_mining] Called rule_mining endpoint.")
+    start_time = time.time()
+    try:
+        rule_mining_str = chat_bot.rule_mining()
+        print("[rule_mining] Finished rule_mining() call.")
+        # Parse the rule_mining_str into a list of dicts for the frontend
+        import re
+        rules = []
+        rule_pattern = re.compile(r"Rule: (.*?), conf\\(f->p\\): ([0-9.eE+-]+), conf\\(p->f\\): ([0-9.eE+-]+), lift: ([0-9.eE+-]+)")
+        for match in rule_pattern.finditer(rule_mining_str):
+            rules.append({
+                "rule": match.group(1),
+                "conf_p_to_f": float(match.group(2)),
+                "conf_f_to_p": float(match.group(3)),
+                "lift": float(match.group(4)),
+            })
+        elapsed = time.time() - start_time
+        print(f"[rule_mining] Returning {len(rules)} rules. Time taken: {elapsed:.2f} seconds.")
+        return Response({"rules": rules, "elapsed": elapsed})
+    except Exception as e:
+        print(f"[rule_mining] Exception: {e}")
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["GET"])
+def distance_correlation(request):
+    """
+    Compute distance correlation between each chiplet type and Energy (y column) and Time (x column).
+    """
+    try:
+        # Load data from CSV
+        file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+        import csv
+        xs, ys, gpus, attns, sparses, convs = [], [], [], [], [], []
+        with open(file_path, mode='r') as file:
+            csv_reader = csv.reader(file)
+            for row in csv_reader:
+                xs.append(float(row[0]))
+                ys.append(float(row[1]))
+                gpus.append(float(row[2]))
+                attns.append(float(row[3]))
+                sparses.append(float(row[4]))
+                convs.append(float(row[5]))
+        # Compute distance correlation for each chiplet type vs Energy and vs Time
+        result = {
+            "GPU_vs_Energy": float(dcor.distance_correlation(np.array(gpus), np.array(ys))),
+            "Attention_vs_Energy": float(dcor.distance_correlation(np.array(attns), np.array(ys))),
+            "Sparse_vs_Energy": float(dcor.distance_correlation(np.array(sparses), np.array(ys))),
+            "Convolution_vs_Energy": float(dcor.distance_correlation(np.array(convs), np.array(ys))),
+            "GPU_vs_Time": float(dcor.distance_correlation(np.array(gpus), np.array(xs))),
+            "Attention_vs_Time": float(dcor.distance_correlation(np.array(attns), np.array(xs))),
+            "Sparse_vs_Time": float(dcor.distance_correlation(np.array(sparses), np.array(xs))),
+            "Convolution_vs_Time": float(dcor.distance_correlation(np.array(convs), np.array(xs))),
+        }
+        return Response(result)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)

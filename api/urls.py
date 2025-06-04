@@ -9,6 +9,8 @@ from .views import evaluate_point
 from .views import evaluate_point_inputs
 from .views import add_info
 from .views import update_data
+from .views import rule_mining
+from .views import distance_correlation
 
 router = DefaultRouter()
 router.register(r"tasks", TaskViewSet)
@@ -22,4 +24,6 @@ urlpatterns = [
     path("evaluate-point/", evaluate_point, name="evaluate_point"),
     path("evaluate-point-inputs/", evaluate_point_inputs, name="evaluate_point_inputs"),
     path("add-info/", add_info, name="add_info"),
+    path("rule-mining/", rule_mining, name="rule_mining"),
+    path("distance-correlation/", distance_correlation, name="distance_correlation"),
 ] + router.urls
