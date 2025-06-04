@@ -265,20 +265,51 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     print("Total Time: %0.5fms" % (total_exe))
     print("Total Energy: %0.5fmJ" % (total_energy))
 
-    results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
-    with open(results_file, "w") as f:
-        jsonData = []
-        for ind,result in enumerate(agg_kernel_results):
-            resultCopy = deepcopy(result)
-            resultCopy["kernal_number"] = ind
-            jsonData.append(resultCopy)
-        json.dump(jsonData, f, indent=4)
-    print(f"Results saved to {results_file}")
+    # results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+    # with open(results_file, "w") as f:
+    #     jsonData = []
+    #     for ind,result in enumerate(agg_kernel_results):
+    #         resultCopy = deepcopy(result)
+    #         resultCopy["kernal_number"] = ind
+    #         jsonData.append(resultCopy)
+    #     json.dump(jsonData, f, indent=4)
+    # print(f"Results saved to {results_file}")
+
+    # result_file = OUTPUT_DIR + "/points.csv"
+    # with open(result_file, "a") as f:
+    #     f.write(f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n")
+    # print(f"Summary saved to {result_file}")
 
     result_file = OUTPUT_DIR + "/points.csv"
-    with open(result_file, "a") as f:
-        f.write(f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n")
-    print(f"Summary saved to {result_file}")
+    entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n"
+    # Check if entry already exists
+    exists = False
+    try:
+        with open(result_file, "r") as f:
+            for line in f:
+                if line.strip() == entry.strip():
+                    exists = True
+                    break
+    except FileNotFoundError:
+        pass  # File does not exist yet
+
+    if not exists:
+        with open(result_file, "a") as f:
+            f.write(entry)
+            print(f"Summary saved to {result_file}")
+
+        context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+        with open(context_file, "w") as f:
+            jsonData = []
+            for ind, result in enumerate(agg_kernel_results):
+                resultCopy = deepcopy(result)
+                resultCopy["kernal_number"] = ind
+                jsonData.append(resultCopy)
+            json.dump(jsonData, f, indent=4)
+        print(f"Results saved to {context_file}")
+
+    else:
+        print(f"Entry already exists in {result_file}, not writing duplicate.")
 
     return float(total_exe), float(total_energy)
 
