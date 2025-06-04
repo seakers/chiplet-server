@@ -59,20 +59,36 @@ class CascadeProblem(ElementwiseProblem):
         #     out["F"] = [10e6, 10e6]
         # else:
 
-        context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
-        with open(context_file, "w") as f:
-            jsonData = []
-            for ind, result in enumerate(agg_kernel_results):
-                resultCopy = deepcopy(result)
-                resultCopy["kernal_number"] = ind
-                jsonData.append(resultCopy)
-            json.dump(jsonData, f, indent=4)
-        print(f"Results saved to {context_file}")
-
         result_file = self.OUTPUT_DIR + "/points.csv"
-        with open(result_file, "a") as f:
-            f.write(f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]}\n")
-        print(f"Summary saved to {result_file}")
+        entry = f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]}\n"
+        # Check if entry already exists
+        exists = False
+        try:
+            with open(result_file, "r") as f:
+                for line in f:
+                    if line.strip() == entry.strip():
+                        exists = True
+                        break
+        except FileNotFoundError:
+            pass  # File does not exist yet
+
+        if not exists:
+            with open(result_file, "a") as f:
+                f.write(entry)
+                print(f"Summary saved to {result_file}")
+
+            context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
+            with open(context_file, "w") as f:
+                jsonData = []
+                for ind, result in enumerate(agg_kernel_results):
+                    resultCopy = deepcopy(result)
+                    resultCopy["kernal_number"] = ind
+                    jsonData.append(resultCopy)
+                json.dump(jsonData, f, indent=4)
+            print(f"Results saved to {context_file}")
+
+        else:
+            print(f"Entry already exists in {result_file}, not writing duplicate.")
 
         out["F"] = [total_exe, total_energy]
 
