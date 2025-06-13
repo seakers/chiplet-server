@@ -445,7 +445,7 @@ class ChatBotModel():
         return new_pfront_rules, pfront_costs, pfront_lifts
     
     def find_confidences(self, rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data):
-        min_supp = 0.01
+        min_supp = 0.05
         new_rules = 0
             
         for rule in rules_dict:

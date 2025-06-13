@@ -9,6 +9,7 @@ from api.Evaluator.generator import DataGenerator
 from api.ChatBot.model import ChatBotModel
 import dcor
 import numpy as np
+import re
 
 ################ Instantiate the necessary objects ################
 dataGenerator = DataGenerator()
@@ -153,9 +154,8 @@ def rule_mining(request):
         rule_mining_str = chat_bot.rule_mining()
         print("[rule_mining] Finished rule_mining() call.")
         # Parse the rule_mining_str into a list of dicts for the frontend
-        import re
         rules = []
-        rule_pattern = re.compile(r"Rule: (.*?), conf\\(f->p\\): ([0-9.eE+-]+), conf\\(p->f\\): ([0-9.eE+-]+), lift: ([0-9.eE+-]+)")
+        rule_pattern = re.compile(r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \[([0-9.eE+-]+)\]")
         for match in rule_pattern.finditer(rule_mining_str):
             rules.append({
                 "rule": match.group(1),
@@ -201,5 +201,34 @@ def distance_correlation(request):
             "Convolution_vs_Time": float(dcor.distance_correlation(np.array(convs), np.array(xs))),
         }
         return Response(result)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["GET"])
+def rule_mining_insights(request):
+    """
+    Run rule mining, send the results to the LLM, and return a natural-language summary.
+    """
+    try:
+        from api.ChatBot.model import ChatBotModel
+        chat_bot = ChatBotModel()
+        rule_mining_str = chat_bot.rule_mining()
+        prompt = (
+            "You are an expert in chiplet design. The following are results from a RULE MINING analysis. "
+            "Please provide a clear, concise, and insightful summary in natural language, "
+            "explaining what these rules mean for design choices and performance.\n\n"
+            + rule_mining_str
+        )
+        response = chat_bot.get_response(prompt, role="user")
+        # Post-process to remove any sentence containing 'distance correlation'
+        def clean_rule_mining_response(text):
+            import re
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            cleaned_sentences = [s for s in sentences if 'distance correlation' not in s.lower()]
+            result = ' '.join(cleaned_sentences).strip()
+            return result
+
+        cleaned_response = clean_rule_mining_response(response)
+        return Response({"insights": cleaned_response})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
