@@ -5,6 +5,7 @@ matplotlib.use('agg')
 import numpy as np
 from scipy.optimize import minimize
 from collections import Counter
+import os
 
 from api.Evaluator.cascade.chiplet_model.dse.lib.plot_results import PlotResults
 from api.Evaluator.cascade.chiplet_model.dse.lib.chiplet_system import ChipletSystem
@@ -78,6 +79,7 @@ class CascadeProblem(ElementwiseProblem):
                 print(f"Summary saved to {result_file}")
 
             context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
+            os.makedirs(os.path.dirname(context_file), exist_ok=True)
             with open(context_file, "w") as f:
                 jsonData = []
                 for ind, result in enumerate(agg_kernel_results):
@@ -299,6 +301,7 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
             print(f"Summary saved to {result_file}")
 
         context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+        os.makedirs(os.path.dirname(context_file), exist_ok=True)
         with open(context_file, "w") as f:
             jsonData = []
             for ind, result in enumerate(agg_kernel_results):
