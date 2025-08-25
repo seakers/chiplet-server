@@ -1,0 +1,1 @@
+{"distance_correlation": {"GPU_vs_Energy": 0.7020122052161667, "Attention_vs_Energy": 0.11851007695377988, "Sparse_vs_Energy": 0.9159460347925987, "Convolution_vs_Energy": 0.23519991954514374, "GPU_vs_Time": 0.41285076080477423, "Attention_vs_Time": 0.789277009518203, "Sparse_vs_Time": 0.2278624525937817, "Convolution_vs_Time": 0.6108240361922088}}

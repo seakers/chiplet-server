@@ -143,57 +143,83 @@ class CascadeProblem(ElementwiseProblem):
 
         return float(total_exe*1000), float(total_energy*10**3)
 
-def runGACascade(pop_size=10, n_gen=5, trace=""):
+def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return_decisions=False, output_dir=None):
     """
     Run the Genetic Algorithm for Cascades.
+    If initial_population is provided, use it as the initial population for the GA.
+    If return_decisions is True, return both objectives and decision variables.
+    output_dir: if provided, use as OUTPUT_DIR for all file writes (e.g., points.csv)
     """
-    if trace == "":
-        print("No trace provided.")
-        print("Selecting a random trace.")
-        trace = "gpt-j-65536-weighted"
-    # WORKSPACE='chiplet-server/chiplet-model'
-    WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
-    TRACE_DIR=WORKSPACE+'/traces'
-    CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
-    EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/'+trace+'.json' # gpt-j-65536-weighted.json
-    OUTPUT_DIR=WORKSPACE+'/dse/results'
+    import numpy as np
+    if isinstance(trace, dict):
+        print("Received composite trace:", trace)
+        latency = trace.get("latency", 100)
+        energy = trace.get("energy", 200)
+        points = np.array([
+            [latency, energy],
+            [latency * 1.1, energy * 0.9],
+            [latency * 0.95, energy * 1.05]
+        ])
+        if return_decisions:
+            # Dummy decision variables (zeros)
+            decisions = np.zeros((points.shape[0], 12))
+            return {"objectives": points, "decisions": decisions}
+        return points
+    else:
+        if trace == "":
+            print("No trace provided.")
+            print("Selecting a random trace.")
+            trace = "gpt-j-65536-weighted"
+        WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
+        TRACE_DIR=WORKSPACE+'/traces'
+        CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
+        EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/'+trace+'.json'
+        if output_dir is not None:
+            OUTPUT_DIR = output_dir
+        else:
+            OUTPUT_DIR=WORKSPACE+'/dse/results'
+        traces_available = ["gpt-j-65536-weighted", "gpt-j-1024-weighted", "sd-test", "dnn-test", "resnet50-test"]
+        print("experiment being performed: ", EXPERIMENT_DIR)
+        print("Pop Size: ", pop_size)
+        print("Number of Generations: ", n_gen)
+        problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
+        # Use initial_population if provided, else IntegerRandomSampling
+        if initial_population is not None:
+            print("Using provided initial population for GA.")
+            algorithm = NSGA2(pop_size=pop_size,
+                              sampling=initial_population,
+                              crossover=SBX(eta=15, prob=0.9, repair=RoundingRepair()),
+                              mutation=PM(eta=20, repair=RoundingRepair()))
+        else:
+            algorithm = NSGA2(pop_size=pop_size,
+                              sampling=IntegerRandomSampling(),
+                              crossover=SBX(eta=15, prob=0.9, repair=RoundingRepair()),
+                              mutation=PM(eta=20, repair=RoundingRepair()))
+        res = minimize(problem,
+                    algorithm,
+                    ("n_gen", n_gen),
+                    verbose=True)
+        print(res.F)
+        
+        # Save current population for potential custom point integration
+        if output_dir is not None:
+            import json
+            population_file = os.path.join(output_dir, 'current_population.json')
+            current_population = res.X.tolist() if hasattr(res, 'X') else []
+            with open(population_file, 'w') as f:
+                json.dump(current_population, f)
+            print(f"Saved current population to {population_file}")
+        
+        if return_decisions:
+            return {"objectives": res.F, "decisions": res.X}
+        return res.F
 
-    traces_available = ["gpt-j-65536-weighted", "gpt-j-1024-weighted", "sd-test", "dnn-test", "resnet50-test"]
-
-    print("experiment being performed: ", EXPERIMENT_DIR)
-
-    ###################################################
-    # hyperparameters for chiplet selection
-    GPU     = 3
-    ATTEN   = 3
-    SPARSE  = 3
-    CONV    = 3
-    NUM_CHANNELS = 16   # Max number of Memory Channels
-    ###################################################
-
-    print("Pop Size: ", pop_size)
-    print("Number of Generations: ", n_gen)
-
-    problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
-
-    algorithm = NSGA2(pop_size=pop_size,
-                      sampling=IntegerRandomSampling(),
-                      crossover=SBX(eta=15, prob=0.9, repair=RoundingRepair()),
-                      mutation=PM(eta=20, repair=RoundingRepair()))
-
-    res = minimize(problem,
-                algorithm,
-                ("n_gen", n_gen),
-                verbose=True)
-
-    print(res.F)
-
-    return res.F
-
-def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace=""):
+def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="", save_to_csv=True):
     """
     Run a single instance of the Cascade model.
     """
+    print(f"runSingleCascade called with chiplets: {chiplets}, trace: {trace}, save_to_csv: {save_to_csv}")
+    
     if trace == "":
         print("No trace provided.")
         print("Selecting a random trace.")
@@ -215,6 +241,9 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
 
     # desired_chiplets = ["gpu"] * numChips[0] + ["atten"] * numChips[1] + ["sparse"] * numChips[2] + ["conv"] * numChips[3]
     desired_chiplets = ["gpu"] * chiplets["GPU"] + ["atten"] * chiplets["Attention"] + ["sparse"] * chiplets["Sparse"] + ["conv"] * chiplets["Convolution"]
+    print(f"Desired chiplets array: {desired_chiplets}")
+    print(f"Total chiplets in array: {len(desired_chiplets)}")
+    
     numChannels = 16 # can be changed to be a variable
     agg_kernel_results = []
 
@@ -267,52 +296,41 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     print("Total Time: %0.5fms" % (total_exe))
     print("Total Energy: %0.5fmJ" % (total_energy))
 
-    # results_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
-    # with open(results_file, "w") as f:
-    #     jsonData = []
-    #     for ind,result in enumerate(agg_kernel_results):
-    #         resultCopy = deepcopy(result)
-    #         resultCopy["kernal_number"] = ind
-    #         jsonData.append(resultCopy)
-    #     json.dump(jsonData, f, indent=4)
-    # print(f"Results saved to {results_file}")
+    # Only save to CSV if save_to_csv is True (for genetic algorithm points, not custom designs)
+    if save_to_csv:
+        result_file = OUTPUT_DIR + "/points.csv"
+        entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n"
+        # Check if entry already exists
+        exists = False
+        try:
+            with open(result_file, "r") as f:
+                for line in f:
+                    if line.strip() == entry.strip():
+                        exists = True
+                        break
+        except FileNotFoundError:
+            pass  # File does not exist yet
 
-    # result_file = OUTPUT_DIR + "/points.csv"
-    # with open(result_file, "a") as f:
-    #     f.write(f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n")
-    # print(f"Summary saved to {result_file}")
+        if not exists:
+            with open(result_file, "a") as f:
+                f.write(entry)
+                print(f"Summary saved to {result_file}")
 
-    result_file = OUTPUT_DIR + "/points.csv"
-    entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n"
-    # Check if entry already exists
-    exists = False
-    try:
-        with open(result_file, "r") as f:
-            for line in f:
-                if line.strip() == entry.strip():
-                    exists = True
-                    break
-    except FileNotFoundError:
-        pass  # File does not exist yet
+            context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+            os.makedirs(os.path.dirname(context_file), exist_ok=True)
+            with open(context_file, "w") as f:
+                jsonData = []
+                for ind, result in enumerate(agg_kernel_results):
+                    resultCopy = deepcopy(result)
+                    resultCopy["kernal_number"] = ind
+                    jsonData.append(resultCopy)
+                json.dump(jsonData, f, indent=4)
+            print(f"Results saved to {context_file}")
 
-    if not exists:
-        with open(result_file, "a") as f:
-            f.write(entry)
-            print(f"Summary saved to {result_file}")
-
-        context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
-        os.makedirs(os.path.dirname(context_file), exist_ok=True)
-        with open(context_file, "w") as f:
-            jsonData = []
-            for ind, result in enumerate(agg_kernel_results):
-                resultCopy = deepcopy(result)
-                resultCopy["kernal_number"] = ind
-                jsonData.append(resultCopy)
-            json.dump(jsonData, f, indent=4)
-        print(f"Results saved to {context_file}")
-
+        else:
+            print(f"Entry already exists in {result_file}, not writing duplicate.")
     else:
-        print(f"Entry already exists in {result_file}, not writing duplicate.")
+        print("Skipping CSV save for custom design evaluation")
 
     return float(total_exe), float(total_energy)
 

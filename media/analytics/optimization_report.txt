@@ -1,0 +1,54 @@
+Report for tradespace exploration run 
+Date: 08/05/2025
+Time (hhmmss): 205123
+#####
+
+Problem formulation (Inputs, for traceability)
+Decisions: 
+Chiplet types: GPU, Attention, Convolution, Sparse 
+Number of slots: 12 
+Objectives:
+Optimization type: Multi-objective
+Objective 1: Minimize energy 
+Objective 2: Minimize runtime
+
+Models and parameters:
+Model: CASCADE
+Trace: gpt-j-65536-weighted
+Search Algorithm: Multi-Objective Genetic Algorithm
+Population Size: 50
+Generation Size: 100
+
+Results (Outputs)
+General statistics
+# total designs evaluated: 6
+# designs on Pareto front: 3
+Time elapsed: Generated at 08/05/2025 205123
+
+Composition of the Pareto front (a table with one pareto optimal design per row)
+Each row contains decision values and objective values
+
+X -> time (ms), Y -> Energy (mJ)
+
+| GPU | Attention | Sparse | Convolution | Time (ms) | Energy (mJ) |
+|-----|-----------|--------|-------------|-----------|-------------|
+| 4 | 3 | 3 | 2 | 2172.85 | 174581.77 |
+| 6 | 3 | 3 | 0 | 2149.48 | 184456.95 |
+| 2 | 3 | 4 | 3 | 2178.72 | 157661.60 |
+
+Association rule mining results (a table with one row per rule of the form F ⇒ Pareto)
+Each row contains a text description of the feature F and importance measures
+
+| Rule Description | Conf(F->P) | Conf(P->F) | Lift |
+|------------------|------------|------------|------|
+| Medium Attention Chiplets | 1.00 | 1.00 | 1.00 |
+
+Sensitivity analysis
+Distance correlation coefficients for each decision-objective pair
+
+| Chiplet Type | Energy | Time |
+|--------------|--------|------|
+| GPU | 0.87 | 0.75 |
+| Attention | 0.00 | 0.00 |
+| Sparse | 0.82 | 0.85 |
+| Convolution | 0.48 | 0.85 |

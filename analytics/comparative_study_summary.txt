@@ -1,0 +1,30 @@
+### Summary of Differences and Insights for Run A and Run B
+
+#### Design Decisions:
+- **Chiplet Composition:** 
+  - Run A features a diverse range of configurations with five distinct chiplet combinations, likely reflecting the complexity needed for tasks associated with the larger model (gpt-j-65536).
+  - Run B has only two configurations, suggesting a simpler setup suitable for the smaller model (gpt-j-1024).
+
+#### Objective Performance:
+- **Run A**: 
+  - Overall energy consumption and runtime are significantly higher, with energy values ranging from 2094.24 to 2215.77 and corresponding runtimes from 136,676.47 to 162,047.07. This indicates a focus on handling more complex computations.
+  
+- **Run B**: 
+  - Performance is much lower in both energy and runtime, with energy between 414.08 and 414.09, and very low runtimes (23,860.16 to 23,859.40). This reflects the efficient handling of less demanding tasks.
+
+#### Association Rules:
+- **Run A**: 
+  - No association rules were found, suggesting a lack of strong correlations between chiplet configurations and their performance metrics or that the performance metrics are uniformly distributed.
+  
+- **Run B**: 
+  - Similarly, no rules found indicate that both chiplet configurations likely perform similarly without significant differentiation in effectiveness or characteristics.
+
+#### Sensitivity Analysis:
+- **Run A**: 
+  - The absence of distance correlation data suggests that input variations do not significantly affect performance, or the data may not vary enough to establish correlation.
+  
+- **Run B**: 
+  - Likewise, the lack of sensitivity analysis data points towards a stable performance across varying configurations, or insufficient granularity in exploration due to the limited number of configurations.
+
+### Conclusion:
+Run A's performance indicates a high complexity anticipation for its more extensive model, whereas Run B demonstrates optimized efficiency for smaller models. The lack of strong association rules and sensitivity data in both runs suggests a need for more exploration or a revision of the metrics to better gauge the effectiveness of different chiplet designs. Future investigations should focus on advanced configurations or different weightings to extract more meaningful insights.

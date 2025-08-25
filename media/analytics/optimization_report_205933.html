@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimization Report - 08/05/2025</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 30px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: 600;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        tr:hover {
+            background-color: #e8f4fd;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            color: #3498db;
+        }
+        .stat-label {
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+        .header-info {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .header-info p {
+            margin: 5px 0;
+            color: #2c3e50;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Optimization Report</h1>
+        
+        <div class="header-info">
+            <p><strong>Date:</strong> 08/05/2025</p>
+            <p><strong>Time:</strong> 205933</p>
+            <p><strong>Report Type:</strong> Tradespace Exploration Run</p>
+        </div>
+
+        <div class="section">
+            <h2>Problem Formulation</h2>
+            <p><strong>Decisions:</strong></p>
+            <ul>
+                <li>Chiplet types: GPU, Attention, Convolution, Sparse</li>
+                <li>Number of slots: 12</li>
+            </ul>
+            <p><strong>Objectives:</strong></p>
+            <ul>
+                <li>Optimization type: Multi-objective</li>
+                <li>Objective 1: Minimize energy</li>
+                <li>Objective 2: Minimize runtime</li>
+            </ul>
+            <p><strong>Models and parameters:</strong></p>
+            <ul>
+                <li>Model: CASCADE</li>
+                <li>Trace: gpt-j-65536-weighted</li>
+                <li>Search Algorithm: Multi-Objective Genetic Algorithm</li>
+                <li>Population Size: 50</li>
+                <li>Generation Size: 100</li>
+            </ul>
+        </div>
+
+        <div class="section">
+            <h2>Results Summary</h2>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-number">4</div>
+                    <div class="stat-label">Total Designs Evaluated</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">3</div>
+                    <div class="stat-label">Designs on Pareto Front</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Pareto Front Composition</h2>
+            <p>X → time (ms), Y → Energy (mJ)</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>GPU</th>
+                        <th>Attention</th>
+                        <th>Sparse</th>
+                        <th>Convolution</th>
+                        <th>Time (ms)</th>
+                        <th>Energy (mJ)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>0</td>
+                        <td>2</td>
+                        <td>7</td>
+                        <td>3</td>
+                        <td>2348.37</td>
+                        <td>132107.52</td>
+                    </tr>
+                    <tr>
+                        <td>4</td>
+                        <td>2</td>
+                        <td>4</td>
+                        <td>2</td>
+                        <td>2211.15</td>
+                        <td>166886.62</td>
+                    </tr>
+                    <tr>
+                        <td>4</td>
+                        <td>3</td>
+                        <td>4</td>
+                        <td>1</td>
+                        <td>2149.07</td>
+                        <td>167383.27</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Association Rule Mining Results</h2>
+            <p>Rules of the form F ⇒ Pareto (each row contains a text description of the feature F and importance measures)</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rule Description</th>
+                        <th>Conf(F→P)</th>
+                        <th>Conf(P→F)</th>
+                        <th>Lift</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Low Attention Chiplets</td>
+                        <td>1.00</td>
+                        <td>0.75</td>
+                        <td>1.00</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Sensitivity Analysis</h2>
+            <p>Distance correlation coefficients for each decision-objective pair</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chiplet Type</th>
+                        <th>Energy</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>GPU</td>
+                        <td>0.99</td>
+                        <td>0.85</td>
+                    </tr>
+                    <tr>
+                        <td>Attention</td>
+                        <td>0.39</td>
+                        <td>0.78</td>
+                    </tr>
+                    <tr>
+                        <td>Sparse</td>
+                        <td>1.00</td>
+                        <td>0.82</td>
+                    </tr>
+                    <tr>
+                        <td>Convolution</td>
+                        <td>0.76</td>
+                        <td>0.96</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

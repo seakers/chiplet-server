@@ -34,7 +34,10 @@ class ChatBotModel():
                            "what additional data is needed to correctly answer the question. " +
                            "To parse the dataset you need to specify a parameter ('flops', 'mem_accessed', 'exe_time', or 'energy'), " +
                            "whether you want the minimum ('min') or maximum ('max') values for that parameter, " +
-                           "and the number of values you want to return. Do not respond with anythin except the data request."
+                           "and the number of values you want to return. " +
+                           "For energy bottleneck analysis, always request the maximum energy values to identify the highest consumers. " +
+                           "For comprehensive energy analysis, consider requesting both energy and memory access data. " +
+                           "Do not respond with anything except the data request."
             }
         ]
 
@@ -76,6 +79,204 @@ class ChatBotModel():
                            "parse_dataset('min_max':'max', 'param':'energy', 'num_points':10)"
             }
         )
+        # Enhanced energy bottleneck analysis examples
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What is the bottleneck for energy?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Which chiplet consumes the most energy?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':3)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What are the energy bottlenecks in this design?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Show me the highest energy consuming chiplets"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What's causing high energy consumption?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':5)\n" +
+                           "parse_dataset('min_max':'max', 'param':'mem_accessed', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Analyze energy distribution across chiplets"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':12)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Which chiplets are energy inefficient?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What's the energy profile of this design?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'energy', 'num_points':12)\n" +
+                           "parse_dataset('min_max':'min', 'param':'energy', 'num_points':3)"
+            }
+        )
+        # Enhanced runtime bottleneck analysis examples
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What is the bottleneck for runtime?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Which chiplet is the slowest?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':3)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What are the runtime bottlenecks in this design?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Show me the slowest chiplets"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What's causing slow execution?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':5)\n" +
+                           "parse_dataset('min_max':'max', 'param':'flops', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Analyze execution time distribution across chiplets"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':12)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "Which chiplets are performance bottlenecks?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':5)"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "user",
+                "content": "What's the performance profile of this design?"
+            }
+        )
+        self.call_data_messages.append(
+            {
+                "role": "assistant",
+                "content": "parse_dataset('min_max':'max', 'param':'exe_time', 'num_points':12)\n" +
+                           "parse_dataset('min_max':'min', 'param':'exe_time', 'num_points':3)"
+            }
+        )
 
     def get_pareto_front_questions(self):
         pfront_question_list = [
@@ -101,10 +302,22 @@ class ChatBotModel():
                 "role": "developer",
                 "content": "You are an expert in chiplet design and optimization. " +
                            "Designs are made up of twelve chiplets, and the different numbers of different kinds of chiplets " +
-                           "give different performance charactaristics. Designs are primarily evaluated based on " +
+                           "give different performance characteristics. Designs are primarily evaluated based on " +
                            "performance and power consumption for a given trace. You are to help the user design a chiplet based on " +
-                           "the information you are provided. Keep your responses as concise as possible, " +
-                           "as if you are talking to another expert in the field. "
+                           "the information you are provided. " +
+                           "When analyzing bottlenecks, provide direct, concise answers that immediately identify the main bottleneck. " +
+                           "For energy bottlenecks, focus on: " +
+                           "1) Which chiplet type is the main energy bottleneck " +
+                           "2) Supporting evidence from the data " +
+                           "3) Key energy consumption values " +
+                           "4) Brief explanation of why this is the bottleneck " +
+                           "For runtime bottlenecks, focus on: " +
+                           "1) Which chiplet type is the main performance bottleneck " +
+                           "2) Supporting evidence from the data " +
+                           "3) Key execution time values " +
+                           "4) Brief explanation of why this is the bottleneck " +
+                           "Keep responses focused and to the point, avoiding unnecessary verbosity. " +
+                           "Be direct and actionable in your analysis."
             }
         ] if specs is None else specs
 
@@ -118,6 +331,20 @@ class ChatBotModel():
                 "content": content
             }
         )
+
+        # Check if this is an energy-related question
+        energy_keywords = [
+            'energy', 'bottleneck', 'consumption', 'efficient', 'power', 
+            'consuming', 'bottlenecks', 'profile', 'distribution', 'inefficient'
+        ]
+        is_energy_question = any(keyword in content.lower() for keyword in energy_keywords)
+        
+        # Check if this is a runtime-related question
+        runtime_keywords = [
+            'runtime', 'execution', 'time', 'slow', 'fast', 'performance', 'speed',
+            'bottleneck', 'bottlenecks', 'slowest', 'fastest', 'latency', 'throughput'
+        ]
+        is_runtime_question = any(keyword in content.lower() for keyword in runtime_keywords)
 
         # Gather information from the point context if the user is asking about a specific chiplet
         if self.pointInActiveContext:
@@ -142,6 +369,14 @@ class ChatBotModel():
                 )
 
             print("The data response worked!")
+            
+            # Add enhanced energy analysis for energy-related questions
+            if is_energy_question:
+                self.add_enhanced_energy_analysis()
+            
+            # Add enhanced runtime analysis for runtime-related questions
+            if is_runtime_question:
+                self.add_enhanced_runtime_analysis()
 
         
         # Add pareto context if the content is similar to any of the pareto front questions
@@ -341,28 +576,36 @@ class ChatBotModel():
         return dist_corr_str
     
 
-    def rule_mining(self, point_selection=None):
+    def rule_mining(self, point_selection_params=None):
         """
-        find combinations of features which have high supp and are on the pareto front of
-        conf(f->p) and conf(p->f)
-        where f are combinations of features and p is a selected set of values
-        p will usually be the first few ranks of the pareto front but can also be user selected points
-        features are, for each chiplet type
-        num = 0 (none)
-        1 <= num <= 2 (low)
-        3 <= num <= 5 (medium)
-        6 <= num <= 8 (high)
-        num >= 9 (very high)
+        Perform rule mining on the data to find patterns in the pareto front
         """
+        # Get file path from parameters or use default
         file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
-        with open(file_path, mode='r') as file:
-            csv_reader = csv.reader(file)
-            full_data = []
-            for row in csv_reader:         
-                full_data.append(
-                    (float(row[0]), float(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]))  # exe_time, energy, GPU, Attention, Sparse, Convolution
-                )
+        if point_selection_params and "file_path" in point_selection_params:
+            file_path = point_selection_params["file_path"]
+        
+        print(f"[ChatBot] Reading data from: {file_path}")
+        full_data = []
+        with open(file_path, "r") as f:
+            for line in f:
+                row = line.strip().split(",")
+                if len(row) >= 6:  # Ensure we have at least 6 columns
+                    full_data.append(
+                        (float(row[0]), float(row[1]), int(round(float(row[2]))), int(round(float(row[3]))), int(round(float(row[4]))), int(round(float(row[5]))))  # exe_time, energy, GPU, Attention, Sparse, Convolution
+                    )
+        
+        # Check if we have any data
+        if not full_data:
+            print("[ChatBot] No data found in CSV file")
+            return "No data available for rule mining analysis."
+        
         full_data = np.array(list(set(full_data)))
+        
+        # Check if the array has the expected shape
+        if len(full_data.shape) != 2 or full_data.shape[1] < 2:
+            print(f"[ChatBot] Unexpected data shape: {full_data.shape}")
+            return "Data format is not suitable for rule mining analysis."
         
         point_vals = full_data[:, :2]  # exe_time, energy
         max_vals = np.max(point_vals, axis=0)*1.1 + 1e-6  # add a small value to avoid division by zero
@@ -376,9 +619,48 @@ class ChatBotModel():
             prank += 1
         full_data = np.hstack((full_data, prank_array.reshape(-1, 1)))
 
-        if point_selection is None: # get the first three ranks of the pareto front
-            point_selection = full_data[full_data[:, -1] < 3]  # select the first three ranks of the pareto front
+        # Handle point selection based on user parameters
+        if point_selection_params is None:
+            # Default behavior: get the first three ranks of the pareto front
+            point_selection = full_data[full_data[:, -1] < 3]
+        else:
+            region = point_selection_params.get("region", "pareto")
+            
+            if region == "all":
+                # Select all points
+                point_selection = full_data
+            elif region == "pareto":
+                # Select Pareto front ranks
+                pareto_start = point_selection_params.get("pareto_start_rank", 1)
+                pareto_end = point_selection_params.get("pareto_end_rank", 3)
+                point_selection = full_data[(full_data[:, -1] >= pareto_start - 1) & (full_data[:, -1] < pareto_end)]
+            elif region == "custom":
+                # Select custom region based on energy and time ranges
+                energy_min = point_selection_params.get("energy_min")
+                energy_max = point_selection_params.get("energy_max")
+                time_min = point_selection_params.get("time_min")
+                time_max = point_selection_params.get("time_max")
+                
+                mask = np.ones(len(full_data), dtype=bool)
+                if energy_min is not None:
+                    mask &= (full_data[:, 1] >= energy_min)  # energy is column 1
+                if energy_max is not None:
+                    mask &= (full_data[:, 1] <= energy_max)
+                if time_min is not None:
+                    mask &= (full_data[:, 0] >= time_min)    # time is column 0
+                if time_max is not None:
+                    mask &= (full_data[:, 0] <= time_max)
+                
+                point_selection = full_data[mask]
+            else:
+                # Fallback to default behavior
+                point_selection = full_data[full_data[:, -1] < 3]
 
+        print(f"Selected {len(point_selection)} points for rule mining analysis")
+
+        # Check if we have enough points for analysis
+        if len(point_selection) == 0:
+            return "No points selected for rule mining analysis. Please check your selection criteria."
 
         feature_list = ["none", "low", "medium", "high", "very high"]
         chiplet_list = ["GPU", "Attention", "Sparse", "Convolution"]
@@ -410,10 +692,14 @@ class ChatBotModel():
             "which have high conf(f->p) (which is the confidence that a combination of rules implies being in the first three ranks of the pareto front) " + \
             "and conf(p->f) (which is the confidence that being on the pareto front implies a combination of rules). Also included is the lift, which is " + \
             "a ratio of how often the rule combination and the pareto front coincide to how often they would if they were independant.\n\n"
-        for i, rule_set in enumerate(new_pfront_rules):
-            rule_str = " AND ".join(rule_set)
-            rule_mining_str += f"Rule: {rule_str}, conf(f->p): {new_pfront_costs[i,0]}, conf(p->f): {new_pfront_costs[i,1]}, lift: {new_pfront_lifts[i]}\n\n"
-            # print(f"Rule: {rule_str}\n Confidence(f->p): {new_pfront_costs[i,0]}, Confidence(p->f): {new_pfront_costs[i,1]}")
+        
+        if len(new_pfront_rules) == 0:
+            rule_mining_str += "No significant rules found in the current dataset."
+        else:
+            for i, rule_set in enumerate(new_pfront_rules):
+                rule_str = " AND ".join(rule_set)
+                rule_mining_str += f"Rule: {rule_str}, conf(f->p): {new_pfront_costs[i,0]}, conf(p->f): {new_pfront_costs[i,1]}, lift: {new_pfront_lifts[i]}\n\n"
+                # print(f"Rule: {rule_str}\n Confidence(f->p): {new_pfront_costs[i,0]}, Confidence(p->f): {new_pfront_costs[i,1]}")
 
         print(f"Rule mining string: {rule_mining_str}")
         return rule_mining_str
@@ -634,3 +920,354 @@ class ChatBotModel():
     #                        "as if you are talking to another expert in the field."
     #         }
     #     ]
+
+    def handle_natural_language_optimization(self, content):
+        import re
+        result = {
+            "model": None,
+            "algorithm": None,
+            "traces": [],
+            "objectives": [],
+            "population_size": 0,
+            "generations": 0
+        }
+
+        # 1. Extract model and algorithm
+        model_match = re.search(r"\bmodel\s+(CASCADE|HISIM)\b", content, re.IGNORECASE)
+        algo_match = re.search(r"\balgorithm\s+(Genetic Algorithm|Full-Factorial)\b", content, re.IGNORECASE)
+        if model_match:
+            result["model"] = model_match.group(1).upper()
+        if algo_match:
+            result["algorithm"] = algo_match.group(1)
+
+        # 2. Extract population and generations
+        pop_match = re.search(r"\bpopulation\s+(\d+)", content, re.IGNORECASE)
+        gen_match = re.search(r"\bgenerations?\s+(\d+)", content, re.IGNORECASE)
+        if pop_match:
+            result["population_size"] = int(pop_match.group(1))
+        if gen_match:
+            result["generations"] = int(gen_match.group(1))
+
+        # 3. Extract objectives
+        objectives = re.findall(r"\b(minimize|optimize for)\s+(energy|time|latency)", content, re.IGNORECASE)
+        if objectives:
+            result["objectives"] = list(set([obj[1].capitalize() for obj in objectives]))
+
+        # 4. Extract trace names
+        trace_matches = re.findall(r"\btrace\s+(gpt-[a-z0-9\-]+)", content, re.IGNORECASE)
+        for trace in trace_matches:
+            result["traces"].append({ "name": trace })
+
+        # Basic validation
+        if not (result["model"] and result["algorithm"] and result["traces"] and result["objectives"]):
+            return { "status": "error", "message": "Could not extract full optimization setup. Please specify model, algorithm, trace, and objectives." }
+
+        # Call the GA run
+        from api.Evaluator.gaCascade import runGACascade
+        from api.Evaluator.generator import generate_weighted_trace
+        from api.views import convert_ndarrays
+
+        trace_input = result["traces"]
+        if len(trace_input) > 1:
+            composite = generate_weighted_trace(trace_input)
+            trace_used = composite
+        else:
+            trace_used = trace_input[0]['name']
+
+        ga_result = runGACascade(
+            pop_size=result["population_size"],
+            n_gen=result["generations"],
+            trace=trace_used
+        )
+        ga_result = convert_ndarrays(ga_result)
+
+        # Save results in memory for now
+        self.latest_result = ga_result
+        return {
+            "status": "success",
+            "message": f"Optimization run completed using {result['algorithm']} on {trace_used}",
+            "data": ga_result
+        }
+
+    def get_data_mining_followup_response(self, question, data_mining_type, structured_data):
+        """
+        Handle follow-up questions about data mining results with context-aware responses.
+        
+        Args:
+            question (str): User's follow-up question
+            data_mining_type (str): "rule_mining" or "distance_correlation"
+            structured_data (dict): The structured data from the analysis
+        """
+        # Create context-specific prompt based on data mining type
+        if data_mining_type == "distance_correlation":
+            context_prompt = (
+                f"You are analyzing distance correlation results for chiplet design optimization.\n\n"
+                f"Trace: {structured_data.get('trace_name', 'Unknown')}\n"
+                f"Objective: {structured_data.get('objective', 'both')}\n\n"
+                f"Correlation Data:\n"
+                f"High impact on energy: {structured_data.get('high_impact_on_energy', [])}\n"
+                f"High impact on time: {structured_data.get('high_impact_on_time', [])}\n\n"
+                f"User Question: {question}\n\n"
+                f"Provide a focused, technical answer based on the correlation data. "
+                f"Explain the relationships between chiplet configurations and performance metrics."
+            )
+        elif data_mining_type == "rule_mining":
+            context_prompt = (
+                f"You are analyzing rule mining results for chiplet design optimization.\n\n"
+                f"Trace: {structured_data.get('trace_name', 'Unknown')}\n"
+                f"Objective: {structured_data.get('objective', 'both')}\n"
+                f"Analysis Region: {structured_data.get('analysis_region', 'Unknown')}\n\n"
+                f"Rules Found:\n{json.dumps(structured_data.get('rules', []), indent=2)}\n\n"
+                f"User Question: {question}\n\n"
+                f"Provide a focused, technical answer based on the rule patterns. "
+                f"Explain the confidence levels, lift values, and what they mean for design decisions."
+            )
+        else:
+            context_prompt = (
+                f"You are analyzing {data_mining_type} results for chiplet design optimization.\n\n"
+                f"Data: {json.dumps(structured_data, indent=2)}\n\n"
+                f"User Question: {question}\n\n"
+                f"Provide a focused, technical answer based on the data."
+            )
+        
+        return self.get_response(context_prompt, role="user")
+
+    def add_run_context(self, summary_text, analytics_text=None, suggestions=None):
+        """
+        Unified method to add run context, analytics insights, and follow-up suggestions to ChatBot.
+        
+        Args:
+            summary_text (str): Run completion summary
+            analytics_text (str, optional): Analytics insights summary
+            suggestions (str, optional): Follow-up question suggestions
+        """
+        # Add run summary
+        self.messages.append({"role": "assistant", "content": summary_text})
+        
+        # Add analytics insights if provided
+        if analytics_text:
+            self.messages.append({"role": "assistant", "content": analytics_text})
+        
+        # Add follow-up suggestions if provided
+        if suggestions:
+            self.messages.append({"role": "assistant", "content": suggestions})
+        
+        print(f"ChatBot: Added run context - Summary: {len(summary_text)} chars, Analytics: {len(analytics_text) if analytics_text else 0} chars, Suggestions: {len(suggestions) if suggestions else 0} chars")
+
+    def add_enhanced_energy_analysis(self):
+        """
+        Add comprehensive energy analysis context to help with energy bottleneck questions.
+        """
+        if not self.pointInActiveContext or len(self.full_data) == 0:
+            return
+        
+        # Analyze energy distribution across all chiplets
+        energy_analysis = []
+        for kernel_idx, kernel_data in enumerate(self.full_data):
+            kernel_name = kernel_data.get('name', f'Kernel {kernel_idx}')
+            chiplets = kernel_data.get('chiplets', {})
+            
+            # Sort chiplets by energy consumption
+            sorted_chiplets = sorted(
+                chiplets.items(), 
+                key=lambda x: x[1].get('energy', 0), 
+                reverse=True
+            )
+            
+            # Get top energy consumers
+            top_consumers = sorted_chiplets[:3]  # Focus on top 3
+            
+            # Calculate energy statistics
+            all_energies = [chiplet[1].get('energy', 0) for chiplet in sorted_chiplets]
+            total_energy = sum(all_energies)
+            
+            # Group by chiplet type
+            type_energy = {}
+            for chiplet_id, chiplet_data in sorted_chiplets:
+                chiplet_type = chiplet_data.get('name', 'unknown')
+                if chiplet_type not in type_energy:
+                    type_energy[chiplet_type] = []
+                type_energy[chiplet_type].append(chiplet_data.get('energy', 0))
+            
+            # Calculate type-specific statistics
+            type_stats = {}
+            for chiplet_type, energies in type_energy.items():
+                type_stats[chiplet_type] = {
+                    'count': len(energies),
+                    'total_energy': sum(energies),
+                    'avg_energy': sum(energies) / len(energies),
+                    'percentage': (sum(energies) / total_energy) * 100
+                }
+            
+            energy_analysis.append({
+                'kernel_name': kernel_name,
+                'kernel_number': kernel_data.get('kernal_number', kernel_idx),
+                'total_energy': total_energy,
+                'top_consumers': top_consumers,
+                'type_statistics': type_stats
+            })
+        
+        # Create concise energy analysis message
+        analysis_message = "Energy Bottleneck Analysis:\n\n"
+        
+        # Identify the main bottleneck across all kernels
+        all_type_stats = {}
+        for analysis in energy_analysis:
+            for chiplet_type, stats in analysis['type_statistics'].items():
+                if chiplet_type not in all_type_stats:
+                    all_type_stats[chiplet_type] = {
+                        'total_energy': 0,
+                        'count': 0,
+                        'avg_energy': 0
+                    }
+                all_type_stats[chiplet_type]['total_energy'] += stats['total_energy']
+                all_type_stats[chiplet_type]['count'] += stats['count']
+        
+        # Calculate overall averages
+        for chiplet_type in all_type_stats:
+            all_type_stats[chiplet_type]['avg_energy'] = (
+                all_type_stats[chiplet_type]['total_energy'] / 
+                all_type_stats[chiplet_type]['count']
+            )
+        
+        # Find the main bottleneck
+        main_bottleneck = max(all_type_stats.items(), key=lambda x: x[1]['avg_energy'])
+        bottleneck_type = main_bottleneck[0]
+        bottleneck_energy = main_bottleneck[1]['avg_energy']
+        
+        # Get supporting evidence from kernels
+        supporting_kernels = []
+        for analysis in energy_analysis:
+            if analysis['type_statistics'].get(bottleneck_type, {}).get('avg_energy', 0) > 0:
+                supporting_kernels.append(analysis['kernel_name'])
+        
+        analysis_message += f"Main Energy Bottleneck: {bottleneck_type.upper()} chiplets\n"
+        analysis_message += f"Average Energy: {bottleneck_energy:.3f} mJ per chiplet\n"
+        analysis_message += f"Evidence: Observed in {len(supporting_kernels)} kernel(s): {', '.join(supporting_kernels)}\n\n"
+        
+        # Show top 3 energy consumers from the first kernel for quick reference
+        if energy_analysis:
+            first_kernel = energy_analysis[0]
+            analysis_message += f"Top Energy Consumers ({first_kernel['kernel_name']} kernel):\n"
+            for i, (chiplet_id, chiplet_data) in enumerate(first_kernel['top_consumers'], 1):
+                analysis_message += f"{i}. Chiplet {chiplet_id} ({chiplet_data.get('name', 'unknown')}): {chiplet_data.get('energy', 0):.3f} mJ\n"
+            analysis_message += "\n"
+        
+        # Quick energy breakdown by type
+        analysis_message += "Energy Breakdown by Type:\n"
+        for chiplet_type, stats in sorted(all_type_stats.items(), key=lambda x: x[1]['avg_energy'], reverse=True):
+            analysis_message += f"- {chiplet_type.upper()}: {stats['avg_energy']:.3f} mJ avg ({stats['count']} chiplets)\n"
+        
+        self.messages.append({
+            "role": "assistant",
+            "content": analysis_message
+        })
+
+    def add_enhanced_runtime_analysis(self):
+        """
+        Add comprehensive runtime analysis context to help with runtime bottleneck questions.
+        """
+        if not self.pointInActiveContext or len(self.full_data) == 0:
+            return
+        
+        # Analyze runtime distribution across all chiplets
+        runtime_analysis = []
+        for kernel_idx, kernel_data in enumerate(self.full_data):
+            kernel_name = kernel_data.get('name', f'Kernel {kernel_idx}')
+            chiplets = kernel_data.get('chiplets', {})
+            
+            # Sort chiplets by execution time
+            sorted_chiplets = sorted(
+                chiplets.items(), 
+                key=lambda x: x[1].get('exe_time', 0), 
+                reverse=True
+            )
+            
+            # Get top runtime consumers
+            top_consumers = sorted_chiplets[:3]  # Focus on top 3
+            
+            # Calculate runtime statistics
+            all_runtimes = [chiplet[1].get('exe_time', 0) for chiplet in sorted_chiplets]
+            total_runtime = sum(all_runtimes)
+            
+            # Group by chiplet type
+            type_runtime = {}
+            for chiplet_id, chiplet_data in sorted_chiplets:
+                chiplet_type = chiplet_data.get('name', 'unknown')
+                if chiplet_type not in type_runtime:
+                    type_runtime[chiplet_type] = []
+                type_runtime[chiplet_type].append(chiplet_data.get('exe_time', 0))
+            
+            # Calculate type-specific statistics
+            type_stats = {}
+            for chiplet_type, runtimes in type_runtime.items():
+                type_stats[chiplet_type] = {
+                    'count': len(runtimes),
+                    'total_runtime': sum(runtimes),
+                    'avg_runtime': sum(runtimes) / len(runtimes),
+                    'percentage': (sum(runtimes) / total_runtime) * 100
+                }
+            
+            runtime_analysis.append({
+                'kernel_name': kernel_name,
+                'kernel_number': kernel_data.get('kernal_number', kernel_idx),
+                'total_runtime': total_runtime,
+                'top_consumers': top_consumers,
+                'type_statistics': type_stats
+            })
+        
+        # Create concise runtime analysis message
+        analysis_message = "Runtime Bottleneck Analysis:\n\n"
+        
+        # Identify the main bottleneck across all kernels
+        all_type_stats = {}
+        for analysis in runtime_analysis:
+            for chiplet_type, stats in analysis['type_statistics'].items():
+                if chiplet_type not in all_type_stats:
+                    all_type_stats[chiplet_type] = {
+                        'total_runtime': 0,
+                        'count': 0,
+                        'avg_runtime': 0
+                    }
+                all_type_stats[chiplet_type]['total_runtime'] += stats['total_runtime']
+                all_type_stats[chiplet_type]['count'] += stats['count']
+        
+        # Calculate overall averages
+        for chiplet_type in all_type_stats:
+            all_type_stats[chiplet_type]['avg_runtime'] = (
+                all_type_stats[chiplet_type]['total_runtime'] / 
+                all_type_stats[chiplet_type]['count']
+            )
+        
+        # Find the main bottleneck
+        main_bottleneck = max(all_type_stats.items(), key=lambda x: x[1]['avg_runtime'])
+        bottleneck_type = main_bottleneck[0]
+        bottleneck_runtime = main_bottleneck[1]['avg_runtime']
+        
+        # Get supporting evidence from kernels
+        supporting_kernels = []
+        for analysis in runtime_analysis:
+            if analysis['type_statistics'].get(bottleneck_type, {}).get('avg_runtime', 0) > 0:
+                supporting_kernels.append(analysis['kernel_name'])
+        
+        analysis_message += f"Main Runtime Bottleneck: {bottleneck_type.upper()} chiplets\n"
+        analysis_message += f"Average Runtime: {bottleneck_runtime:.3f} ms per chiplet\n"
+        analysis_message += f"Evidence: Observed in {len(supporting_kernels)} kernel(s): {', '.join(supporting_kernels)}\n\n"
+        
+        # Show top 3 runtime consumers from the first kernel for quick reference
+        if runtime_analysis:
+            first_kernel = runtime_analysis[0]
+            analysis_message += f"Top Runtime Consumers ({first_kernel['kernel_name']} kernel):\n"
+            for i, (chiplet_id, chiplet_data) in enumerate(first_kernel['top_consumers'], 1):
+                analysis_message += f"{i}. Chiplet {chiplet_id} ({chiplet_data.get('name', 'unknown')}): {chiplet_data.get('exe_time', 0):.3f} ms\n"
+            analysis_message += "\n"
+        
+        # Quick runtime breakdown by type
+        analysis_message += "Runtime Breakdown by Type:\n"
+        for chiplet_type, stats in sorted(all_type_stats.items(), key=lambda x: x[1]['avg_runtime'], reverse=True):
+            analysis_message += f"- {chiplet_type.upper()}: {stats['avg_runtime']:.3f} ms avg ({stats['count']} chiplets)\n"
+        
+        self.messages.append({
+            "role": "assistant",
+            "content": analysis_message
+        })
