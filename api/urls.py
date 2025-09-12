@@ -28,6 +28,7 @@ from .views import add_enhanced_insights_context
 from .views import integrate_custom_point_to_ga
 from .views import save_custom_point_to_dataset
 from .views import generate_comparative_report
+from .views import get_latest_run_directory
 
 # Import new run management views
 from .run_views import (
@@ -68,6 +69,7 @@ urlpatterns = [
     path("list-backup-files/", list_backup_files, name="list_backup_files"),
     path("load-previous-run/", load_previous_run, name="load_previous_run"),
     path("get-previous-run-report/", get_previous_run_report, name="get_previous_run_report"),
+    path("get-latest-run-directory/", get_latest_run_directory, name="get_latest_run_directory"),
     
     # New run management endpoints
     path("runs/", list_runs, name="list_runs"),

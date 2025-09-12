@@ -24,14 +24,16 @@ class RunStorageService:
         trace_name: str = '',
         trace_sets: Dict = None,
         name: str = '',
-        description: str = ''
+        description: str = '',
+        run_id: Optional[str] = None
     ) -> OptimizationRun:
         """Create a new optimization run record"""
         if objectives is None:
             objectives = ['execution_time', 'energy']
         
+        assigned_run_id = run_id or RunStorageService.generate_run_id()
         run = OptimizationRun.objects.create(
-            run_id=RunStorageService.generate_run_id(),
+            run_id=assigned_run_id,
             name=name,
             description=description,
             algorithm=algorithm,

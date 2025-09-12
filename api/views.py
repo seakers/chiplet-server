@@ -1,6 +1,7 @@
 from rest_framework import viewsets
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from .services.run_storage import RunStorageService
 from .models import Task
 from .serializers import TaskSerializer
 
@@ -399,12 +400,32 @@ def get_chat_response(request):
                 "content": f"Optimization run on trace '{trace}' is complete! Check the plot for results."
             })
         threading.Thread(target=run_async).start()
-        return JsonResponse({"message": chat_reply})
+        # Expose a hint that a run has started; frontend can poll for latest
+        return JsonResponse({"message": chat_reply, "run_started": True})
     if content and "run" in content.lower() and any(x in content.lower() for x in ["model", "trace", "population"]):
         parsed_result = chat_bot.handle_natural_language_optimization(content)
-        return Response({"response": parsed_result["message"]})
+        # If we can attach a run id in future, include it here
+        return Response({"response": parsed_result["message"], "run_started": parsed_result.get("status") == "success"})
     response = chat_bot.get_response(content, role)
     return Response({"response": response})
+
+@api_view(["GET"])
+def get_latest_run_directory(request):
+    """
+    Return the most recent run directory (myrun_YYYYMonDD_HHMMSS) if exists on disk.
+    Used by chat-triggered runs to discover the active run id.
+    """
+    try:
+        base_path = "api/Evaluator/cascade/chiplet_model/dse/results"
+        if not os.path.exists(base_path):
+            return Response({"error": "results directory not found"}, status=404)
+        candidates = [d for d in os.listdir(base_path) if d.startswith("myrun_")]
+        if not candidates:
+            return Response({"status": "empty"})
+        latest = sorted(candidates)[-1]
+        return Response({"status": "success", "run_directory": latest})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
 
 @api_view(["POST"])
 def clear_chat(request):
@@ -442,6 +463,8 @@ def get_point_context(request):
     try:
         # Get parameters
         run_id = request.GET.get("run_id")
+        # Optional: full design string like "0gpu6attn6sparse0conv"
+        design = request.GET.get("design")
         gpu = request.GET.get("gpu", "0")
         attn = request.GET.get("attn", "0")
         sparse = request.GET.get("sparse", "0")
@@ -469,7 +492,9 @@ def get_point_context(request):
             run_dir = f"myrun_{run_id}"
         
         # Construct the context file name
-        context_filename = f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+        context_filename = (
+            f"{design}.json" if design else f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+        )
         context_file_path = os.path.join(base_path, run_dir, "pointContext", context_filename)
         
         print(f"Looking for point context file: {context_file_path}")
@@ -480,7 +505,7 @@ def get_point_context(request):
                 "error": "Point context file not found",
                 "file_path": context_file_path,
                 "run_id": run_id,
-                "chiplet_config": f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv"
+                "chiplet_config": design or f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv"
             }, status=404)
         
         # Read and return the JSON file
@@ -1488,11 +1513,11 @@ Just ask me to compare any aspect of the two runs!"""
                     traces = data.get('traces', [])
                     population = int(data.get('population_size', data.get('population', 50)))
                     generations = int(data.get('generations', 100))
-                    initial_population = data.get('initial_population')  # New parameter for restart functionality
+
                     
                     print(f"Backend: Parsed parameters - model: {model}, algorithm: {algorithm}, objectives: {objectives}")
                     print(f"Backend: Traces: {traces}, population: {population}, generations: {generations}")
-                    print(f"Backend: Initial population provided: {initial_population is not None}")
+
                     
                     # Validate required fields
                     if not objectives:
@@ -1505,18 +1530,7 @@ Just ask me to compare any aspect of the two runs!"""
                     if not np.isclose(total_weight, 1.0):
                         return JsonResponse({"status": "error", "message": f"Sum of trace weights must be 1.0, got {total_weight}"}, status=400)
                     
-                    # Process initial population if provided
-                    ga_initial_population = None
-                    if initial_population and isinstance(initial_population, list) and len(initial_population) > 0:
-                        try:
-                            # Convert initial population to numpy array format expected by runGACascade
-                            ga_initial_population = np.array(initial_population)
-                            print(f"Backend: Converted initial population to numpy array with shape: {ga_initial_population.shape}")
-                            print(f"Backend: Initial population sample: {ga_initial_population[:3] if len(ga_initial_population) > 3 else ga_initial_population}")
-                        except Exception as e:
-                            print(f"Backend: Error processing initial population: {e}")
-                            # Continue without initial population if there's an error
-                            ga_initial_population = None
+
                     
                     # Run optimization with simple output directory
                     WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
@@ -1554,7 +1568,6 @@ Just ask me to compare any aspect of the two runs!"""
                         pop_size=population, 
                         n_gen=generations, 
                         trace=trace_name, 
-                        initial_population=ga_initial_population,
                         output_dir=SIMPLE_OUTPUT_DIR
                     )
                     
@@ -2671,7 +2684,54 @@ def load_previous_run(request):
                 print(f"Error extracting metadata from zip: {e}")
                 # Don't fail the entire request if metadata extraction fails
         
-        response = {
+        # Ensure a DB OptimizationRun exists for this loaded backup, so UI can use /api/runs/compare/
+        try:
+            # Create the run if not already present
+            existing = OptimizationRun.objects.filter(run_id=run_id).first()
+            if not existing:
+                algo = (metadata or {}).get('algorithm', 'Genetic Algorithm')
+                model = (metadata or {}).get('model', 'CASCADE')
+                objectives = (metadata or {}).get('objectives', ['Energy', 'Runtime'])
+                pop_size = (metadata or {}).get('population_size', 0)
+                gens = (metadata or {}).get('generations', 0)
+                trace_sets = {
+                    'loaded': {
+                        'traces': [t.get('name') for t in (metadata or {}).get('traces', [])] if (metadata and metadata.get('traces')) else [],
+                        'weights': [t.get('weight') for t in (metadata or {}).get('traces', [])] if (metadata and metadata.get('traces')) else []
+                    }
+                }
+                run = RunStorageService.create_optimization_run(
+                    algorithm=algo,
+                    model=model,
+                    population_size=pop_size or 0,
+                    generations=gens or 0,
+                    objectives=objectives,
+                    trace_name=(trace_sets['loaded']['traces'][0] if trace_sets['loaded']['traces'] else ''),
+                    trace_sets=trace_sets,
+                    name=f"Loaded {backup_filename}",
+                    description="Run loaded from backup CSV",
+                    run_id=run_id
+                )
+                # Store points
+                design_points = [
+                    {
+                        'execution_time_ms': p['x'],
+                        'energy_mj': p['y'],
+                        'chiplets': {
+                            'GPU': int(p.get('gpu', 0)),
+                            'Attention': int(p.get('attn', 0)),
+                            'Sparse': int(p.get('sparse', 0)),
+                            'Convolution': int(p.get('conv', 0))
+                        }
+                    } for p in points
+                ]
+                RunStorageService.store_design_points(run, design_points, results_dir)
+                RunStorageService.complete_run(run)
+        except Exception as e:
+            # Log but do not fail the API response
+            print(f"Warning: Failed to persist loaded run to DB: {e}")
+
+        return JsonResponse({
             "status": "success",
             "run_id": run_id,
             "backup_filename": backup_filename,
@@ -2682,9 +2742,7 @@ def load_previous_run(request):
             "has_zip_file": has_zip,
             "zip_filename": zip_filename if has_zip else None,
             "metadata": metadata
-        }
-        
-        return JsonResponse(response)
+        })
         
     except Exception as e:
         print(f"Error loading previous run: {e}")
