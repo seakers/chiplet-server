@@ -324,6 +324,65 @@ class ChatBotModel():
     def set_model(self, model: str):
         self._model = model
 
+    def get_response_with_retrieval(self, content, role="user", filters=None, top_k: int = 6):
+        """
+        Retrieval-augmented answer with concise citations.
+        """
+        from api.retrieval import search
+
+        # 1) Retrieve
+        results = search(content, self.get_embedding, top_k=top_k, filters=filters)
+
+        # 2) Build compact, token-bounded context
+        context_lines = []
+        citations = []
+        for r in results:
+            ctag = f"C{r['rank']}"
+            text = r["text"]
+            meta = r.get("metadata", {})
+            # Keep each snippet brief
+            snippet = text if len(text) <= 300 else text[:297] + "..."
+            context_lines.append(f"[{ctag}] {snippet}")
+            citations.append({
+                "tag": ctag,
+                "score": r.get("score"),
+                "file_path": meta.get("file_path"),
+                "metadata": meta
+            })
+
+        context_block = "\n".join(context_lines)
+
+        # 3) Prompt with instructions to cite
+        system_msg = {
+            "role": "developer",
+            "content": (
+                "Answer using ONLY the provided context. Cite sources as [C#]. "
+                "If context is insufficient, say what is missing and request it explicitly. "
+                "Be concise and technical."
+            )
+        }
+
+        user_msg = {
+            "role": role,
+            "content": f"Question: {content}\n\nContext:\n{context_block}"
+        }
+
+        messages = [system_msg] + self._specs + [user_msg]
+        completion = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages
+        )
+        answer = completion.choices[0].message.content
+
+        # Append to history minimally
+        self.messages.append({"role": role, "content": content})
+        self.messages.append({"role": "assistant", "content": answer})
+
+        return {
+            "final_answer": answer,
+            "citations": citations
+        }
+
     def get_response(self, content, role="user"):
         self.messages.append(
             {

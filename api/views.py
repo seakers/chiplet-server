@@ -32,6 +32,142 @@ from api.Evaluator.gaCascade import CascadeProblem
 from api.services.run_storage import RunStorageService
 from api.models import OptimizationRun
 
+# ===================== RESTART RUN ENDPOINT =====================
+@api_view(["POST"])
+@csrf_exempt
+def restart_run(request):
+    try:
+        data = json.loads(request.body)
+        backup_filename = data.get('backup_filename')
+        generations = int(data.get('generations', 10))
+        traces = data.get('traces', [])
+
+        if not backup_filename:
+            return JsonResponse({"status": "error", "message": "backup_filename is required"}, status=400)
+
+        # Resolve paths
+        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+        results_dir = os.path.join(WORKSPACE, 'dse/results')
+        source_file = os.path.join(results_dir, backup_filename)
+
+        if not os.path.exists(source_file):
+            return JsonResponse({"status": "error", "message": f"Backup file not found: {backup_filename}"}, status=404)
+
+        # Create new run folder
+        run_id = f"restarted_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_dir = os.path.join(results_dir, run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        os.makedirs(os.path.join(run_dir, 'pointContext'), exist_ok=True)
+
+        # Create temporary file for new GA points only
+        temp_new_points = os.path.join(run_dir, 'new_points_temp.csv')
+        with open(temp_new_points, 'w') as f:
+            f.write('')  # Empty file for new points
+
+        # Keep original points in a separate file for reference
+        original_points = os.path.join(run_dir, 'original_points.csv')
+        try:
+            with open(source_file, 'r') as src, open(original_points, 'w') as dst:
+                for line in src:
+                    dst.write(line.strip())
+                    if not line.endswith('\n'):
+                        dst.write('\n')
+        except Exception as e:
+            return JsonResponse({"status": "error", "message": f"Failed to copy original points: {str(e)}"}, status=500)
+
+        # Start GA in background, seeded from previous designs
+        def run_seeded_ga():
+            try:
+                # Use weighted trace if available; default to gpt-j-65536-weighted
+                trace_name = 'gpt-j-65536-weighted'
+                if isinstance(traces, list) and len(traces) > 0 and isinstance(traces[0], dict) and traces[0].get('name'):
+                    trace_name = traces[0]['name']
+
+                # Build initial population from previous points' decisions (cols 2..5 -> 4 chiplet counts, repeat to 12 vars)
+                import csv
+                decisions = []
+                try:
+                    with open(source_file, 'r') as f:
+                        reader = csv.reader(f)
+                        for row in reader:
+                            if len(row) >= 6:
+                                gpu, attn, sparse, conv = int(float(row[2])), int(float(row[3])), int(float(row[4])), int(float(row[5]))
+                                # Map 4 counts into 12 decision vars by repeating each count 3x (simple lift)
+                                indiv = [gpu, attn, sparse, conv] * 3
+                                decisions.append(indiv[:12])
+                except Exception:
+                    pass
+
+                from pymoo.operators.sampling.rnd import FloatRandomSampling
+                import numpy as np
+                initial_sampling = None
+                if decisions:
+                    initial_sampling = np.array(decisions, dtype=int)
+
+                # Use population size as size of initial sampling, fallback to 50
+                pop_size = len(decisions) if decisions else 50
+
+                # Modify GA to write to temp file instead of main points.csv
+                import shutil
+                original_ga_output = os.path.join(run_dir, 'points.csv')
+                
+                # Run GA with modified output directory (it will write to points.csv)
+                runGACascade(
+                    pop_size=pop_size,
+                    n_gen=generations,
+                    trace=trace_name,
+                    initial_population=initial_sampling,
+                    output_dir=run_dir
+                )
+                
+                # After GA completes, merge original + new points into final file
+                final_points = os.path.join(run_dir, f'points_merged_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
+                with open(final_points, 'w') as merged:
+                    # Write original points first
+                    with open(original_points, 'r') as orig:
+                        for line in orig:
+                            merged.write(line)
+                    
+                    # Write new GA points
+                    if os.path.exists(original_ga_output):
+                        with open(original_ga_output, 'r') as new:
+                            for line in new:
+                                merged.write(line)
+                
+                print(f"Restart run completed. Merged file: {final_points}")
+            except Exception as e:
+                print(f"restart_run background error: {e}")
+
+        t = threading.Thread(target=run_seeded_ga, daemon=True)
+        t.start()
+
+        # Read initial points from the copied original_points.csv to send to frontend
+        initial_points_data = []
+        try:
+            import csv
+            with open(original_points, 'r') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 6:
+                        initial_points_data.append({
+                            'x': float(row[0]), 'y': float(row[1]),
+                            'gpu': float(row[2]), 'attn': float(row[3]),
+                            'sparse': float(row[4]), 'conv': float(row[5]),
+                            'type': 'optimization', 'algorithm': 'Genetic Algorithm',
+                            'trace': 'gpt-j-65536-weighted'
+                        })
+        except Exception as e:
+            print(f"Error reading initial points: {e}")
+
+        return JsonResponse({
+            "status": "success",
+            "run_id": run_id,
+            "initial_points": initial_points_data,
+            "message": "Restarted run initialized and GA started"
+        })
+    except Exception as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=500)
+
 ################ Instantiate the necessary objects ################
 dataGenerator = DataGenerator()
 chat_bot = ChatBotModel()
@@ -406,6 +542,24 @@ def get_chat_response(request):
         parsed_result = chat_bot.handle_natural_language_optimization(content)
         # If we can attach a run id in future, include it here
         return Response({"response": parsed_result["message"], "run_started": parsed_result.get("status") == "success"})
+    # Try RAG path first
+    try:
+        filters = {}
+        # Optional: pass simple filters derived from query params
+        for key in ["trace", "doc_type"]:
+            val = request.GET.get(key)
+            if val:
+                filters[key] = val
+        rag_result = chat_bot.get_response_with_retrieval(content, role, filters or None)
+        if rag_result and isinstance(rag_result, dict) and rag_result.get("final_answer"):
+            return Response({
+                "response": rag_result["final_answer"],
+                "citations": rag_result.get("citations", [])
+            })
+    except Exception as e:
+        # Fallback to baseline chat
+        pass
+
     response = chat_bot.get_response(content, role)
     return Response({"response": response})
 
@@ -476,46 +630,72 @@ def get_point_context(request):
         # Construct the file path
         base_path = "/Users/ramyagotika/research-work/chiplet/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results"
         
-        # Handle different run ID formats
+        # Construct candidate run directories to handle different formats
+        candidates = []
         if run_id.startswith("loaded_run_"):
-            # For loaded runs, use the original run directory
-            run_dir = run_id.replace("loaded_run_", "myrun_")
-            # Convert timestamp format if needed
-            if "_" in run_dir:
-                parts = run_dir.split("_")
+            # Map loaded_run_YYYYMMDD_HHMMSS → myrun_YYYYMMDD_HHMMSS
+            mapped = run_id.replace("loaded_run_", "myrun_")
+            if "_" in mapped:
+                parts = mapped.split("_")
                 if len(parts) >= 3:
                     date_part = parts[1]
                     time_part = parts[2]
-                    run_dir = f"myrun_{date_part}_{time_part}"
+                    mapped = f"myrun_{date_part}_{time_part}"
+            candidates.append(mapped)
+            # Also try the original loaded_run_ directory name
+            candidates.append(run_id)
+            # Also try temp_points_<loaded_run_...> (based on CSV naming pattern)
+            candidates.append(f"temp_points_{run_id}")
         else:
-            # For regular runs, use the run_id directly
-            run_dir = f"myrun_{run_id}"
+            candidates.append(f"myrun_{run_id}")
+            candidates.append(run_id)
+            # If this looks like restarted_run_YYYYMMDD_HHMMSS, try as-is
+            if run_id.startswith("restarted_run_"):
+                candidates.append(run_id)
         
         # Construct the context file name
         context_filename = (
             f"{design}.json" if design else f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
         )
-        context_file_path = os.path.join(base_path, run_dir, "pointContext", context_filename)
+        found_path = None
+        tried = []
+        for run_dir in candidates:
+            candidate_path = os.path.join(base_path, run_dir, "pointContext", context_filename)
+            tried.append(candidate_path)
+            if os.path.exists(candidate_path):
+                found_path = candidate_path
+                break
         
-        print(f"Looking for point context file: {context_file_path}")
+        print(f"Looking for point context file, tried: {tried}")
         
-        # Check if file exists
-        if not os.path.exists(context_file_path):
+        if not found_path:
+            # Gather available designs in the candidate run directories (if they exist)
+            available_designs = []
+            for run_dir in candidates:
+                pc_dir = os.path.join(base_path, run_dir, "pointContext")
+                if os.path.isdir(pc_dir):
+                    try:
+                        for fname in os.listdir(pc_dir):
+                            if fname.endswith('.json'):
+                                available_designs.append(fname[:-5])  # strip .json
+                    except Exception:
+                        pass
             return Response({
                 "error": "Point context file not found",
-                "file_path": context_file_path,
+                "tried_paths": tried,
                 "run_id": run_id,
-                "chiplet_config": design or f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv"
+                "chiplet_config": design or f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv",
+                "available_designs": sorted(list(set(available_designs)))
             }, status=404)
         
         # Read and return the JSON file
-        with open(context_file_path, 'r') as f:
+        with open(found_path, 'r') as f:
             context_data = json.load(f)
         
         return Response({
             "message": "Point context retrieved successfully",
             "context": context_data,
-            "file_path": context_file_path
+            "file_path": found_path
         })
         
     except Exception as e:
@@ -774,16 +954,25 @@ def distance_correlation_insights(request):
                 sparses.append(float(row[4]))
                 convs.append(float(row[5]))
         
-        # Compute distance correlation for each chiplet type vs Energy and vs Time
+        # Compute distance correlation safely (avoid NaN/Inf in JSON)
+        def safe_dcor(a, b):
+            try:
+                val = float(dcor.distance_correlation(np.array(a), np.array(b)))
+                if np.isnan(val) or np.isinf(val):
+                    return None
+                return val
+            except Exception:
+                return None
+
         correlations = {
-            "GPU_vs_Energy": float(dcor.distance_correlation(np.array(gpus), np.array(ys))),
-            "Attention_vs_Energy": float(dcor.distance_correlation(np.array(attns), np.array(ys))),
-            "Sparse_vs_Energy": float(dcor.distance_correlation(np.array(sparses), np.array(ys))),
-            "Convolution_vs_Energy": float(dcor.distance_correlation(np.array(convs), np.array(ys))),
-            "GPU_vs_Time": float(dcor.distance_correlation(np.array(gpus), np.array(xs))),
-            "Attention_vs_Time": float(dcor.distance_correlation(np.array(attns), np.array(xs))),
-            "Sparse_vs_Time": float(dcor.distance_correlation(np.array(sparses), np.array(xs))),
-            "Convolution_vs_Time": float(dcor.distance_correlation(np.array(convs), np.array(xs))),
+            "GPU_vs_Energy": safe_dcor(gpus, ys),
+            "Attention_vs_Energy": safe_dcor(attns, ys),
+            "Sparse_vs_Energy": safe_dcor(sparses, ys),
+            "Convolution_vs_Energy": safe_dcor(convs, ys),
+            "GPU_vs_Time": safe_dcor(gpus, xs),
+            "Attention_vs_Time": safe_dcor(attns, xs),
+            "Sparse_vs_Time": safe_dcor(sparses, xs),
+            "Convolution_vs_Time": safe_dcor(convs, xs),
         }
         
         # Create structured JSON data for UI display
@@ -791,17 +980,18 @@ def distance_correlation_insights(request):
         time_correlations = {k: v for k, v in correlations.items() if 'Time' in k}
         
         # Sort by correlation value (descending)
-        energy_sorted = sorted(energy_correlations.items(), key=lambda x: x[1], reverse=True)
-        time_sorted = sorted(time_correlations.items(), key=lambda x: x[1], reverse=True)
+        # Sort, treating None as -inf so they sink to bottom
+        energy_sorted = sorted(energy_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
+        time_sorted = sorted(time_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
         
         # Create structured JSON data
         structured_data = {
             "high_impact_on_energy": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": round(value, 3)}
+                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
                 for chiplet_metric, value in energy_sorted
             ],
             "high_impact_on_time": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": round(value, 3)}
+                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
                 for chiplet_metric, value in time_sorted
             ],
             "trace_name": trace_name,
@@ -814,12 +1004,14 @@ def distance_correlation_insights(request):
         correlation_data += "Energy Impact (Distance Correlation Values):\n"
         for chiplet_metric, value in energy_sorted:
             chiplet = chiplet_metric.split('_vs_')[0]
-            correlation_data += f"• {chiplet}: {value:.3f}\n"
+            val_str = f"{value:.3f}" if value is not None else "N/A"
+            correlation_data += f"• {chiplet}: {val_str}\n"
         
         correlation_data += "\nTime Impact (Distance Correlation Values):\n"
         for chiplet_metric, value in time_sorted:
             chiplet = chiplet_metric.split('_vs_')[0]
-            correlation_data += f"• {chiplet}: {value:.3f}\n"
+            val_str = f"{value:.3f}" if value is not None else "N/A"
+            correlation_data += f"• {chiplet}: {val_str}\n"
         
         # Create goal-aware prompt
         if objective == "energy":
