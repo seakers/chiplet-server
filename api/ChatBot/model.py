@@ -15,8 +15,10 @@ class ChatBotModel():
     def __init__(self, specs=None, model: str="gpt-4o-mini"):
         self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self._call_data = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self._optimization_agent = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.set_specs(specs=specs)
         self.call_data_specs()
+        self.optimization_agent_specs()
         self.messages = self._specs.copy()
         self.call_data_messages = self._call_data_specs.copy()
         self.call_data_context()
@@ -305,166 +307,163 @@ class ChatBotModel():
                            "give different performance characteristics. Designs are primarily evaluated based on " +
                            "performance and power consumption for a given trace. You are to help the user design a chiplet based on " +
                            "the information you are provided. " +
-                           "When analyzing bottlenecks, provide direct, concise answers that immediately identify the main bottleneck. " +
-                           "For energy bottlenecks, focus on: " +
-                           "1) Which chiplet type is the main energy bottleneck " +
-                           "2) Supporting evidence from the data " +
-                           "3) Key energy consumption values " +
-                           "4) Brief explanation of why this is the bottleneck " +
-                           "For runtime bottlenecks, focus on: " +
-                           "1) Which chiplet type is the main performance bottleneck " +
-                           "2) Supporting evidence from the data " +
-                           "3) Key execution time values " +
-                           "4) Brief explanation of why this is the bottleneck " +
-                           "Keep responses focused and to the point, avoiding unnecessary verbosity. " +
-                           "Be direct and actionable in your analysis."
+                           "To get that information, you can call a set of sub-agents which will take in the context and user query " + 
+                            "and return relevant information about the chiplet design and its performance characteristics. " +
+                            "These subagents can be called by writing 'CALL:<sub-agent-name>' in your response, " +
+                            "where <sub-agent-name> is the name of the sub-agent you wish to call. " +
+                            "The sub-agents are:\n" +
+                            "'dcorr_agent' - This agent will calculate distance correlations between design variables and performance objectives." +
+                            " This agent needs no additional information.\n" +
+                            "'rule_mining_agent' - This agent will perform rule mining on the dataset to find patterns in the Pareto front." +
+                            " This agent needs no additional information.\n" +
+                            "'optimization_agent' - This agent will start a new optimization run going. This agent needs the following information:\n" +
+                            "- model: This can be CASCADE or HISIM\n" +
+                            "- algorithm: This can be genetic algorithm or full factorial\n" +
+                            "- traces: This is the trace used for the optimization\n" +
+                            "- objectives: This is a list of objectives to optimize for. Can be energy, time, or latency\n" +
+                            "- population_size: This is the size of the population for genetic algorithm\n" +
+                            "- generations: This is the number of generations for genetic algorithm\n" +
+                            "'energy_analysis_agent' - This agent will perform an enhanced energy analysis on the current design. " +
+                            "This agent needs no additional information.\n" +
+                            "'runtime_analysis_agent' - This agent will perform an enhanced runtime analysis on the current design. " +
+                            "This agent needs no additional information.\n" + 
+                            "'point_info_agent' - This agent will provide information about a specific chiplet design point. " +
+                            "This agent needs no additional information.\n" +
+                            "Only answer without a subagent if no subagent is relevant to the user's question." +
+                            "When answering, be concise and technical. If you do not have enough information to answer the question, " +
+                            "please ask for clarification."
             }
         ] if specs is None else specs
 
     def set_model(self, model: str):
         self._model = model
 
-    def get_response_with_retrieval(self, content, role="user", filters=None, top_k: int = 6):
+    def get_response(self, query, role="user", use_retrieval: bool = False, filters=None, top_k: int = 6):
         """
-        Retrieval-augmented answer with concise citations.
+        Unified response method. Supports optional retrieval-augmented generation (use_retrieval=True).
+        Also detects CALL:<subagent> mentions and performs a dummy subagent call (placeholder).
+        Returns:
+          - If use_retrieval=True: dict with "final_answer" and "citations" (keeps old behavior)
+          - Otherwise: string (assistant content)
         """
-        from api.retrieval import search
+        # append user message to history
+        self.messages.append({"role": role, "content": query})
 
-        # 1) Retrieve
-        results = search(content, self.get_embedding, top_k=top_k, filters=filters)
+        # If retrieval requested, run retrieval-augmented flow
+        if use_retrieval:
+            from api.retrieval import search
 
-        # 2) Build compact, token-bounded context
-        context_lines = []
-        citations = []
-        for r in results:
-            ctag = f"C{r['rank']}"
-            text = r["text"]
-            meta = r.get("metadata", {})
-            # Keep each snippet brief
-            snippet = text if len(text) <= 300 else text[:297] + "..."
-            context_lines.append(f"[{ctag}] {snippet}")
-            citations.append({
-                "tag": ctag,
-                "score": r.get("score"),
-                "file_path": meta.get("file_path"),
-                "metadata": meta
-            })
+            # 1) Retrieve
+            results = search(query, self.get_embedding, top_k=top_k, filters=filters)
 
-        context_block = "\n".join(context_lines)
+            # 2) Build compact, token-bounded context
+            context_lines = []
+            citations = []
+            for r in results:
+                ctag = f"C{r['rank']}"
+                text = r.get("text", "")
+                meta = r.get("metadata", {}) or {}
+                snippet = text if len(text) <= 300 else text[:297] + "..."
+                context_lines.append(f"[{ctag}] {snippet}")
+                citations.append({
+                    "tag": ctag,
+                    "score": r.get("score"),
+                    "file_path": meta.get("file_path"),
+                    "metadata": meta
+                })
+            context_block = "\n".join(context_lines)
 
-        # 3) Prompt with instructions to cite
-        system_msg = {
-            "role": "developer",
-            "content": (
-                "Answer using ONLY the provided context. Cite sources as [C#]. "
-                "If context is insufficient, say what is missing and request it explicitly. "
-                "Be concise and technical."
-            )
-        }
-
-        user_msg = {
-            "role": role,
-            "content": f"Question: {content}\n\nContext:\n{context_block}"
-        }
-
-        messages = [system_msg] + self._specs + [user_msg]
-        completion = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages
-        )
-        answer = completion.choices[0].message.content
-
-        # Append to history minimally
-        self.messages.append({"role": role, "content": content})
-        self.messages.append({"role": "assistant", "content": answer})
-
-        return {
-            "final_answer": answer,
-            "citations": citations
-        }
-
-    def get_response(self, content, role="user"):
-        self.messages.append(
-            {
-                "role": role,
-                "content": content
-            }
-        )
-
-        # Check if this is an energy-related question
-        energy_keywords = [
-            'energy', 'bottleneck', 'consumption', 'efficient', 'power', 
-            'consuming', 'bottlenecks', 'profile', 'distribution', 'inefficient'
-        ]
-        is_energy_question = any(keyword in content.lower() for keyword in energy_keywords)
-        
-        # Check if this is a runtime-related question
-        runtime_keywords = [
-            'runtime', 'execution', 'time', 'slow', 'fast', 'performance', 'speed',
-            'bottleneck', 'bottlenecks', 'slowest', 'fastest', 'latency', 'throughput'
-        ]
-        is_runtime_question = any(keyword in content.lower() for keyword in runtime_keywords)
-
-        # Gather information from the point context if the user is asking about a specific chiplet
-        if self.pointInActiveContext:
-            self.call_data_messages.append(
-                {
-                    "role": 'user',
-                    "content": content
-                }
-            )
-            call_data_completion = self._call_data.chat.completions.create(
-                model=self._model,
-                messages=self.call_data_messages
-            )
-            call_data_response = call_data_completion.choices[0].message.content
-            for line in call_data_response.splitlines():
-                call_data_message = self.retrieve_point_parser(line)
-                self.messages.append(
-                    {
-                        "role": 'user',
-                        "content": call_data_message
-                    }
+            # 3) Prompt with instructions to cite
+            system_msg = {
+                "role": "developer",
+                "content": (
+                    "Answer using ONLY the provided context. Cite sources as [C#]. "
+                    "If context is insufficient, say what is missing and request it explicitly. "
+                    "Be concise and technical."
                 )
+            }
 
-            print("The data response worked!")
-            
-            # Add enhanced energy analysis for energy-related questions
-            if is_energy_question:
-                self.add_enhanced_energy_analysis()
-            
-            # Add enhanced runtime analysis for runtime-related questions
-            if is_runtime_question:
-                self.add_enhanced_runtime_analysis()
+            user_msg = {
+                "role": role,
+                "content": f"Question: {query}\n\nContext:\n{context_block}"
+            }
 
-        
-        # Add pareto context if the content is similar to any of the pareto front questions
-        content_embedding = self.get_embedding(content)
-        for question in self.pareto_front_questions:
-            pareto_similarity = self.cosine_similarity(content_embedding, self.pareto_front_questions[question])
-            print(f"Question: {question}")
-            print(f"Pareto similarity: {pareto_similarity}")
-            if pareto_similarity > 0.6:
-                print("Adding pareto context.")
-                self.add_pareto_context()
-                break
+            messages = [system_msg] + self._specs + [user_msg]
+            completion = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages
+            )
+            answer = completion.choices[0].message.content
 
-        print("Message History: ", self.messages)
+            # Append to history minimally
+            self.messages.append({"role": role, "content": query})
+            self.messages.append({"role": "assistant", "content": answer})
+
+            return {
+                "final_answer": answer,
+                "citations": citations
+            }
+
+        # Default non-retrieval flow: call chat completion with accumulated messages
         completion = self._client.chat.completions.create(
             model=self._model,
             messages=self.messages
         )
-        print(completion.choices[0].message.content)
-        self.messages.append(
-            {
-                "role": completion.choices[0].message.role,
-                "content": completion.choices[0].message.content
-            }
-        )
-        return completion.choices[0].message.content
+
+        content = completion.choices[0].message.content
+        assistant_role = completion.choices[0].message.role if hasattr(completion.choices[0].message, "role") else "assistant"
+
+        # include the original user query with agent calls when agents need the content
+        combined_for_agents = content + "\n\nUser Query: " + query
+
+            # detect subagent calls and perform dummy calls
+        subagents = {
+            "dcorr_agent": self.dcor_manager,
+            "rule_mining_agent": self.rule_mining,
+            "optimization_agent": lambda: self.optimization_manager(combined_for_agents),
+            "energy_analysis_agent": self.add_enhanced_energy_analysis,
+            "runtime_analysis_agent": self.add_enhanced_runtime_analysis,
+            "point_info_agent": lambda: self.retrieve_point_parser(combined_for_agents)
+        }
+
+        response_to_user = False
+        while not response_to_user:
+            response_to_user = True
+            for agent_name, agent_fn in subagents.items():
+            # match patterns like "CALL:agent" or "CALL:<agent>" or loose "CALL" + agent mention
+                if f"CALL:{agent_name}" in content or f"CALL:<{agent_name}>" in content or ("CALL" in content and agent_name in content):
+                    response_to_user = False
+                    print(f"Detected subagent call: {agent_name}")
+                    try:
+                        result = agent_fn()
+                        print(f"Subagent {agent_name} result: {result}")
+                        # Some agents append messages themselves (energy/runtime); handle None accordingly
+                        if result is None:
+                            agent_msg = f"[{agent_name}] Agent executed."
+                        elif isinstance(result, dict):
+                            agent_msg = f"[{agent_name}] Result: {json.dumps(result, default=str)}"
+                        else:
+                            agent_msg = f"[{agent_name}] Result: {str(result)}"
+                    except Exception as e:
+                        agent_msg = f"[{agent_name}] Error during execution: {e}"
+
+                    # add the agent response to the chat history
+                    print(f"Agent {agent_name} response: {agent_msg}")
+                    self.messages.append({"role": "assistant", "content": agent_msg})
+                    completion = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=self.messages
+                    )
+                    content = completion.choices[0].message.content
+
+        # append assistant reply to history
+        self.messages.append({"role": assistant_role, "content": content})
+
+        return content
 
     def add_information(self, contextFilePath):
         # self.pointContext = {} # reset to zero in case of multiple calls
+        # print("Loading point context from:", contextFilePath)
         self.pointContext = []
         self.pointInActiveContext = True
         try:
@@ -492,6 +491,14 @@ class ChatBotModel():
             print(f"Error: File at {contextFilePath} not found.")
         # except Exception as e:
         #     print(f"An error occurred: {e}")
+
+    def retrieve_point_manager(self, message):
+        response = self._call_data.chat.completions.create(
+            model=self._model,
+            messages=self.call_data_messages + [{"role": "user", "content": message}]
+        )
+        model_call = response.choices[0].message.content
+        return self.retrieve_point_parser(model_call)
 
     def retrieve_point_parser(self, model_call):
         """
@@ -618,6 +625,46 @@ class ChatBotModel():
             }
         )
 
+    def dcor_manager(self):
+        """
+        Calculate distance correlations between objectives and design variables
+        """
+        file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+        with open(file_path, mode='r') as file:
+            csv_reader = csv.reader(file)
+            full_data = []
+            for row in csv_reader:         
+                full_data.append(
+                    json.dumps(
+                        {
+                            "exe_time": float(row[0]),
+                            "energy": float(row[1]),
+                            "chiplets": {
+                                "GPU": int(row[2]),
+                                "Attention": int(row[3]),
+                                "Sparse": int(row[4]),
+                                "Convolution": int(row[5])
+                            }
+                        },
+                        sort_keys=True
+                    )
+                )
+
+        full_data = [json.loads(item) for item in set(full_data)]
+
+        point_vals = []
+        design_vals = []
+        for data in full_data:
+            point_vals.append([data["exe_time"], data["energy"]])
+            design_vals.append([data["chiplets"]["GPU"], data["chiplets"]["Attention"],
+                                data["chiplets"]["Sparse"], data["chiplets"]["Convolution"]])
+
+        point_vals = np.array(point_vals)
+        design_vals = np.array(design_vals)
+
+        distance_correlation_str = self.get_distance_correlations(point_vals, design_vals)
+
+        return distance_correlation_str
 
     def get_distance_correlations(self, objective_vals, design_vals):
         objectives = ["exe_time", "energy"]
@@ -980,6 +1027,58 @@ class ChatBotModel():
     #         }
     #     ]
 
+    def optimization_agent_specs(self):
+        self._optimization_agent_specs = [
+            {
+            "role": "developer",
+            "content": (
+                "You are an expert in chiplet design optimization. When a user asks for an optimization run, "
+                "you MUST return a single, explicit, tightly-structured specification line so the downstream parser "
+                "can extract fields reliably. Use the exact keys (lowercase) with a colon separator and comma-separated fields. "
+                "Do NOT add extra prose or explanation in the same message — only return the structured call or a short JSON error.\n\n"
+
+                "Required single-line format (keys are lowercase, order may vary, but keep the same tokens and separators):\n"
+                "model: <cascade|hisim>, algorithm: <Genetic Algorithm|Full-Factorial>, population: <int>, generations: <int>, objectives: <space-separated-list-of-energy|time|latency>, trace: <gpt-[a-z0-9-]+>\n\n"
+
+                "Rules and examples:\n"
+                "- model: use 'cascade' or 'hisim' (case-insensitive for values). Example: model: cascade\n"
+                "- algorithm: exactly 'Genetic Algorithm' or 'Full-Factorial' (capitalization as shown). Example: algorithm: Genetic Algorithm\n"
+                "- population: integer (required for Genetic Algorithm; optional for Full-Factorial). Example: population: 50\n"
+                "- generations: integer (required for Genetic Algorithm; optional/ignored for Full-Factorial). Example: generations: 20\n"
+                "- objectives: one or more of 'energy', 'time', 'latency' separated by spaces. Example: objectives: energy time\n"
+                "- trace: one or more trace lines may appear; each trace value must match pattern gpt-[a-z0-9-]+. Example: trace: gpt-j-65536-weighted\n"
+                "- For multiple traces, include multiple 'trace:' entries separated by commas in the same line: trace: gpt-a, trace: gpt-b\n\n"
+
+                "Minimal valid request must include: model, algorithm, at least one trace, and at least one objective. "
+                "If parsing would fail because required fields are missing or invalid, return exactly a short JSON error object, e.g.:\n"
+                '{"status":"error","message":"Missing fields: model, algorithm, traces, objectives. Please provide them using the exact tokens."}\n\n'
+
+                "Examples of valid single-line outputs (these exact styles are preferred):\n"
+                "- model: cascade, algorithm: Genetic Algorithm, population: 50, generations: 20, objectives: energy time, trace: gpt-j-65536-weighted\n"
+                "- model: hisim, algorithm: Full-Factorial, objectives: time, trace: gpt-alpha, trace: gpt-beta\n\n"
+
+                "Keep the response concise and ONLY return the single structured specification line or the JSON error. "
+                "Do not include commentary, step descriptions, or extra formatting."
+                "If you do not have enough information to create a valid optimization request, return the string 'ERROR' followed "
+                "by a brief explanation of what is missing."
+            )
+            }
+        ]
+
+    def optimization_manager(self, content):
+        print("[Optimization Manager] Received Request:", content)
+        response = self._optimization_agent.chat.completions.create(
+            model=self._model,
+            messages=self._optimization_agent_specs + [{"role": "user", "content": content}]
+        )
+        parsed_request = response.choices[0].message.content
+        print("[Optimization Manager] Parsed Request:", parsed_request)
+        if parsed_request.startswith("ERROR"):
+            return json.dumps({ "status": "error", "message": parsed_request[6:] })
+        handle_response = self.handle_natural_language_optimization(parsed_request)
+        return str(handle_response)
+    
+
     def handle_natural_language_optimization(self, content):
         import re
         result = {
@@ -991,37 +1090,84 @@ class ChatBotModel():
             "generations": 0
         }
 
-        # 1. Extract model and algorithm
-        model_match = re.search(r"\bmodel\s+(CASCADE|HISIM)\b", content, re.IGNORECASE)
-        algo_match = re.search(r"\balgorithm\s+(Genetic Algorithm|Full-Factorial)\b", content, re.IGNORECASE)
-        if model_match:
-            result["model"] = model_match.group(1).upper()
-        if algo_match:
-            result["algorithm"] = algo_match.group(1)
+        # Strict parser following optimization_agent_specs single-line format:
+        # Expected tokens: model:, algorithm:, population:, generations:, objectives:, trace:
+        content_line = content.strip()
 
-        # 2. Extract population and generations
-        pop_match = re.search(r"\bpopulation\s+(\d+)", content, re.IGNORECASE)
-        gen_match = re.search(r"\bgenerations?\s+(\d+)", content, re.IGNORECASE)
-        if pop_match:
-            result["population_size"] = int(pop_match.group(1))
-        if gen_match:
-            result["generations"] = int(gen_match.group(1))
+        # 1) Model (cascade|hisim) - store lowercase as in specs
+        m = re.search(r"model:\s*(cascade|hisim)\b", content_line, re.IGNORECASE)
+        if m:
+            result["model"] = m.group(1).lower()
 
-        # 3. Extract objectives
-        objectives = re.findall(r"\b(minimize|optimize for)\s+(energy|time|latency)", content, re.IGNORECASE)
-        if objectives:
-            result["objectives"] = list(set([obj[1].capitalize() for obj in objectives]))
+        # 2) Algorithm - must be exactly 'Genetic Algorithm' or 'Full-Factorial'
+        a = re.search(r"algorithm:\s*(Genetic Algorithm|Full-Factorial)\b", content_line, re.IGNORECASE)
+        if a:
+            # normalize to canonical capitalization
+            alg = a.group(1).lower()
+            if "genetic" in alg:
+                result["algorithm"] = "Genetic Algorithm"
+            else:
+                result["algorithm"] = "Full-Factorial"
 
-        # 4. Extract trace names
-        trace_matches = re.findall(r"\btrace\s+(gpt-[a-z0-9\-]+)", content, re.IGNORECASE)
-        for trace in trace_matches:
-            result["traces"].append({ "name": trace })
+        # 3) Population and generations (integers)
+        p = re.search(r"population:\s*(\d+)\b", content_line, re.IGNORECASE)
+        g = re.search(r"generations?:\s*(\d+)\b", content_line, re.IGNORECASE)
+        if p:
+            result["population_size"] = int(p.group(1))
+        if g:
+            result["generations"] = int(g.group(1))
 
+        # 4) Objectives: space-separated list (energy, time, latency)
+        obj_match = re.search(r"objectives?:\s*([a-z0-9 _-]+)", content_line, re.IGNORECASE)
+        if obj_match:
+            objs = obj_match.group(1).strip()
+            # split on whitespace, filter valid tokens
+            parsed_objs = []
+            for token in re.split(r"\s+", objs):
+                t = token.lower().strip()
+            if t in ("energy", "time", "latency"):
+                if t not in parsed_objs:
+                    parsed_objs.append(t)
+            result["objectives"] = parsed_objs
+
+        # 5) Trace(s): can appear multiple times. Each trace must match gpt-[a-z0-9-]+
+        trace_matches = re.findall(r"trace:\s*(gpt-[a-z0-9-]+)\b", content_line, re.IGNORECASE)
+        # also allow comma-separated traces after a trace: token (e.g. "trace: gpt-a, gpt-b")
+        if not trace_matches:
+            # look for "trace:" then parse comma-separated values until next key or end
+            tblock = re.search(r"trace:\s*([^,]+(?:\s*,\s*[^:,]+)*)", content_line, re.IGNORECASE)
+            if tblock:
+                candidates = re.split(r"\s*,\s*", tblock.group(1))
+                for c in candidates:
+                    c = c.strip()
+                    if re.fullmatch(r"gpt-[a-z0-9-]+", c, re.IGNORECASE):
+                        trace_matches.append(c)
+        # deduplicate while preserving order and normalize to lowercase canonical form
+        seen = set()
+        for t in trace_matches:
+            tn = t.lower()
+            if tn not in seen:
+                seen.add(tn)
+            result["traces"].append({"name": tn})
+
+        # 6) Final sanity checks for required extras:
+        # If algorithm is Genetic Algorithm, require population and generations
+        if result["algorithm"] == "Genetic Algorithm":
+            missing = []
+            if not result["population_size"] or result["population_size"] == 0:
+                missing.append("population")
+            if not result["generations"] or result["generations"] == 0:
+                missing.append("generations")
+            if missing:
+                return {"status": "error", "message": f"Missing fields: {', '.join(missing)}. Genetic Algorithm requires population and generations."}
+
+        print("[Optimization Handler] Extracted Request:", result)
         # Basic validation
         if not (result["model"] and result["algorithm"] and result["traces"] and result["objectives"]):
             return { "status": "error", "message": "Could not extract full optimization setup. Please specify model, algorithm, trace, and objectives." }
 
         # Call the GA run
+        print("[Optimization Handler] Starting Optimization Run...")
         from api.Evaluator.gaCascade import runGACascade
         from api.Evaluator.generator import generate_weighted_trace
         from api.views import convert_ndarrays
@@ -1117,7 +1263,9 @@ class ChatBotModel():
         """
         Add comprehensive energy analysis context to help with energy bottleneck questions.
         """
+        print("Got Here")
         if not self.pointInActiveContext or len(self.full_data) == 0:
+            print("No Active Context or Full Data")
             return
         
         # Analyze energy distribution across all chiplets
@@ -1217,10 +1365,11 @@ class ChatBotModel():
         for chiplet_type, stats in sorted(all_type_stats.items(), key=lambda x: x[1]['avg_energy'], reverse=True):
             analysis_message += f"- {chiplet_type.upper()}: {stats['avg_energy']:.3f} mJ avg ({stats['count']} chiplets)\n"
         
-        self.messages.append({
-            "role": "assistant",
-            "content": analysis_message
-        })
+        # self.messages.append({
+        #     "role": "assistant",
+        #     "content": analysis_message
+        # })
+        return analysis_message
 
     def add_enhanced_runtime_analysis(self):
         """
@@ -1326,7 +1475,8 @@ class ChatBotModel():
         for chiplet_type, stats in sorted(all_type_stats.items(), key=lambda x: x[1]['avg_runtime'], reverse=True):
             analysis_message += f"- {chiplet_type.upper()}: {stats['avg_runtime']:.3f} ms avg ({stats['count']} chiplets)\n"
         
-        self.messages.append({
-            "role": "assistant",
-            "content": analysis_message
-        })
+        # self.messages.append({
+        #     "role": "assistant",
+        #     "content": analysis_message
+        # })
+        return analysis_message
