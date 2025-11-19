@@ -24,6 +24,7 @@ from .views import load_previous_run
 from .views import get_previous_run_report
 from .views import data_mining_followup
 from .views import get_point_context
+from .views import get_kernel_breakdown
 from .views import add_enhanced_insights_context
 from .views import integrate_custom_point_to_ga
 from .views import save_custom_point_to_dataset
@@ -36,7 +37,8 @@ from .run_views import (
     list_runs, get_run_details, get_run_for_plotting, get_multiple_runs_for_plotting,
     compare_runs, search_runs, get_pareto_fronts, create_comparative_study,
     list_comparative_studies, migrate_existing_data, delete_run, get_run_statistics,
-    export_run_to_zip, export_comparative_study_to_zip, export_multiple_runs_to_zip, cleanup_exports
+    export_run_to_zip, export_comparative_study_to_zip, export_multiple_runs_to_zip, cleanup_exports,
+    pause_run, stop_run
 )
 
 router = DefaultRouter()
@@ -59,6 +61,7 @@ urlpatterns = [
     path("add-insights-context/", add_insights_context, name="add_insights_context"),
     path("add-enhanced-insights-context/", add_enhanced_insights_context, name="add_enhanced_insights_context"),
     path("get-point-context/", get_point_context, name="get_point_context"),
+    path("get-kernel-breakdown/", get_kernel_breakdown, name="get_kernel_breakdown"),
     path("generate-optimization-report/", generate_optimization_report, name="generate_optimization_report"),
     path("generate-comparative-report/", generate_comparative_report, name="generate_comparative_report"),
     path("run-optimization/", run_optimization, name="run_optimization"),
@@ -84,6 +87,8 @@ urlpatterns = [
     path("runs/<str:run_id>/plot/", get_run_for_plotting, name="get_run_for_plotting"),
     path("runs/<str:run_id>/delete/", delete_run, name="delete_run"),
     path("runs/<str:run_id>/export/", export_run_to_zip, name="export_run_to_zip"),
+    path("runs/<str:run_id>/pause/", pause_run, name="pause_run"),
+    path("runs/<str:run_id>/stop/", stop_run, name="stop_run"),
     
     # Export endpoints
     path("exports/comparative-study/", export_comparative_study_to_zip, name="export_comparative_study_to_zip"),

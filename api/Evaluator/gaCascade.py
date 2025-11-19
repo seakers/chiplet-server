@@ -151,6 +151,12 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
     output_dir: if provided, use as OUTPUT_DIR for all file writes (e.g., points.csv)
     """
     import numpy as np
+    import os
+    # --- Always clear points.csv before starting new GA run ---
+    result_dir = output_dir if output_dir is not None else OUTPUT_DIR
+    points_file = os.path.join(result_dir, "points.csv")
+    with open(points_file, 'w') as f:
+        pass  # Truncate the file (empty it)
     if isinstance(trace, dict):
         print("Received composite trace:", trace)
         latency = trace.get("latency", 100)

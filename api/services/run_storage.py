@@ -140,17 +140,29 @@ class RunStorageService:
         analytics_results: Dict[str, Any] = None
     ) -> OptimizationRun:
         """Mark a run as completed and store analytics"""
+        print(f"✅ complete_run: Starting completion for run {run.run_id}")
+        print(f"✅ complete_run: Current status: {run.status}, algorithm: {run.algorithm}")
+        
         run.status = 'completed'
         run.completed_at = timezone.now()
         if execution_time_seconds:
             run.execution_time_seconds = execution_time_seconds
+        
+        # Refresh from DB before save to ensure we have latest data
+        run.refresh_from_db()
+        
         run.save()
+        print(f"✅ complete_run: Saved run {run.run_id} with status={run.status}, completed_at={run.completed_at}")
+        
+        # Verify it was saved correctly
+        saved_run = OptimizationRun.objects.get(run_id=run.run_id)
+        print(f"✅ complete_run: Verification - saved run status={saved_run.status}, algorithm={saved_run.get_algorithm_display()}")
         
         # Store analytics results
         if analytics_results:
             RunStorageService.store_analytics_results(run, analytics_results)
         
-        return run
+        return saved_run
     
     @staticmethod
     def store_analytics_results(

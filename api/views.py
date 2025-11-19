@@ -17,6 +17,8 @@ from datetime import datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 import json
+import csv
+import os
 import sys
 import os
 import threading
@@ -215,9 +217,74 @@ def compute_sum(request):
 def get_chart_data(request):
     print("get_chart_data called")
     comparative = request.GET.get("comparative", "false").lower() == "true"
+    requested_algorithm = request.GET.get("algorithm")
     
     # Get file path for loaded runs
     file_path = request.GET.get("file_path")
+    
+    # Try to determine algorithm from run_id if file_path contains run_id or run_id is in query params
+    # This helps ensure GA points are labeled correctly even if algorithm param is missing or incorrect
+    # IMPORTANT: Override requested_algorithm if we can determine correct one from database
+    determined_algorithm = None
+    run_id = request.GET.get("run_id")
+    
+    # Try to extract run_id from file_path if not in query params
+    if file_path and not run_id:
+        import re
+        run_id_match = re.search(r'(?:restarted_run_|loaded_run_|run_)([^/]+)', file_path)
+        if run_id_match:
+            run_id = run_id_match.group(1)
+            print(f"Extracted run_id from file_path: {run_id}")
+    
+    # Look up algorithm from database using run_id - this takes precedence over requested_algorithm
+    if run_id:
+        try:
+            from api.models import OptimizationRun
+            # Try exact match first
+            run = OptimizationRun.objects.filter(run_id=run_id).first()
+            if not run:
+                # Try partial match - but be more strict: match at start of run_id
+                # This prevents matching wrong runs when run_id is a substring
+                # WARNING: This fallback might match wrong run if run_id is partial
+                print(f"⚠️ Exact run_id match failed for '{run_id}', trying partial match...")
+                run = OptimizationRun.objects.filter(run_id__istartswith=run_id).order_by('-created_at').first()
+                if run:
+                    print(f"⚠️ Partial match found run_id '{run.run_id}' (algorithm: '{run.get_algorithm_display()}') - verify this is correct!")
+            if run:
+                determined_algorithm = run.get_algorithm_display()
+                print(f"✅ Determined algorithm from run_id {run_id}: {determined_algorithm} (database algorithm: '{run.algorithm}') (overriding requested_algorithm: {requested_algorithm})")
+                # CRITICAL: Verify the algorithm is correct
+                if run.algorithm == 'GA' and determined_algorithm != 'Genetic Algorithm':
+                    print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{determined_algorithm}'. Forcing to 'Genetic Algorithm'")
+                    determined_algorithm = 'Genetic Algorithm'
+                elif run.algorithm == 'FF' and determined_algorithm != 'Full-Factorial':
+                    print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{determined_algorithm}'. Forcing to 'Full-Factorial'")
+                    determined_algorithm = 'Full-Factorial'
+            else:
+                print(f"⚠️ No run found with run_id: {run_id}")
+        except Exception as e:
+            print(f"❌ Error looking up algorithm from run_id: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Use determined algorithm if available, otherwise use requested_algorithm, otherwise default to Genetic Algorithm
+    # determined_algorithm takes precedence because it comes from the database
+    algorithm_to_use = determined_algorithm or requested_algorithm or 'Genetic Algorithm'
+    
+    # CRITICAL: Final safety check - ensure algorithm label is correct
+    # If we have a run_id but couldn't determine algorithm, warn and use requested or default
+    if run_id and not determined_algorithm:
+        print(f"⚠️ WARNING: Could not determine algorithm from run_id {run_id}, using: {algorithm_to_use}")
+    
+    # Additional validation: if requested_algorithm is 'Genetic Algorithm' but we got something else from DB, 
+    # trust the database unless there's a clear mismatch
+    if determined_algorithm and requested_algorithm:
+        if requested_algorithm == 'Genetic Algorithm' and determined_algorithm != 'Genetic Algorithm':
+            print(f"⚠️ WARNING: Requested 'Genetic Algorithm' but database says '{determined_algorithm}'. Using database value.")
+        elif requested_algorithm == 'Full-Factorial' and determined_algorithm != 'Full-Factorial':
+            print(f"⚠️ WARNING: Requested 'Full-Factorial' but database says '{determined_algorithm}'. Using database value.")
+    
+    print(f"get_chart_data - requested_algorithm: {requested_algorithm}, determined_algorithm: {determined_algorithm}, run_id: {run_id}, FINAL using: {algorithm_to_use}")
     
     if comparative:
         # Comparative mode: read from runA_results/points.csv and runB_results/points.csv
@@ -248,7 +315,7 @@ def get_chart_data(request):
                                 'sparse': float(row[4]),
                                 'conv': float(row[5]),
                                 'type': row[6] if len(row) > 6 else 'optimization',
-                                'algorithm': 'Genetic Algorithm',
+                                'algorithm': algorithm_to_use,
                                 'trace': 'gpt-j-65536-weighted',
                                 'run': 'A'
                             })
@@ -274,7 +341,7 @@ def get_chart_data(request):
                                 'sparse': float(row[4]),
                                 'conv': float(row[5]),
                                 'type': row[6] if len(row) > 6 else 'optimization',
-                                'algorithm': 'Genetic Algorithm',
+                                'algorithm': algorithm_to_use,
                                 'trace': 'gpt-j-65536-weighted',
                                 'run': 'B'
                             })
@@ -317,7 +384,7 @@ def get_chart_data(request):
                             'sparse': float(row[4]),
                             'conv': float(row[5]),
                             'type': row[6] if len(row) > 6 else 'optimization',  # point type
-                            'algorithm': 'Genetic Algorithm',
+                            'algorithm': algorithm_to_use,
                             'trace': 'gpt-j-65536-weighted'  # Default trace
                         })
             print(f"Read {len(points)} points from {points_csv_path}")
@@ -400,8 +467,7 @@ def get_chat_response(request):
                 try:
                     # Load data from CSV
                     file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
-                    import csv
-                    import os
+                    
                     
                     print(f"[HIGHLIGHTING] Checking if file exists: {file_path}")
                     if not os.path.exists(file_path):
@@ -607,6 +673,94 @@ def add_insights_context(request):
         else:
             return Response({"error": "No insights provided"}, status=400)
     except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["GET"])
+def get_kernel_breakdown(request):
+    """
+    Extract and return condensed kernel-wise breakdown of energy and runtime.
+    Returns CSV or JSON format based on request parameter.
+    """
+    try:
+        # Get parameters
+        run_id = request.GET.get("run_id")
+        design = request.GET.get("design")
+        gpu = request.GET.get("gpu", "0")
+        attn = request.GET.get("attn", "0")
+        sparse = request.GET.get("sparse", "0")
+        conv = request.GET.get("conv", "0")
+        output_format = request.GET.get("format", "json")  # 'json' or 'csv'
+        
+        if not run_id:
+            return Response({"error": "run_id is required"}, status=400)
+        
+        # Construct the context file path (same logic as get_point_context)
+        base_path = "/Users/ramyagotika/research-work/chiplet/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results"
+        
+        # Construct candidate run directories
+        candidates = []
+        if run_id.startswith("loaded_run_"):
+            mapped = run_id.replace("loaded_run_", "myrun_")
+            if "_" in mapped:
+                parts = mapped.split("_")
+                if len(parts) >= 3:
+                    date_part = parts[1]
+                    time_part = parts[2]
+                    mapped = f"myrun_{date_part}_{time_part}"
+            candidates.append(mapped)
+            candidates.append(run_id)
+            candidates.append(f"temp_points_{run_id}")
+        else:
+            candidates.append(f"myrun_{run_id}")
+            candidates.append(run_id)
+            if run_id.startswith("restarted_run_"):
+                candidates.append(run_id)
+        
+        # Construct the context file name
+        context_filename = (
+            f"{design}.json" if design else f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+        )
+        found_path = None
+        for run_dir in candidates:
+            candidate_path = os.path.join(base_path, run_dir, "pointContext", context_filename)
+            if os.path.exists(candidate_path):
+                found_path = candidate_path
+                break
+        
+        if not found_path:
+            return Response({
+                "error": "Point context file not found",
+                "run_id": run_id,
+                "chiplet_config": design or f"{gpu}gpu{attn}attn{sparse}sparse{conv}conv"
+            }, status=404)
+        
+        # Extract kernel breakdown using ChatBot model
+        from api.ChatBot.model import ChatBotModel
+        chat_bot = ChatBotModel()
+        breakdown = chat_bot.extract_kernel_breakdown(context_file_path=found_path, output_format=output_format)
+        
+        if breakdown is None:
+            return Response({"error": "Failed to extract kernel breakdown"}, status=500)
+        
+        # If CSV format, return file path info
+        if output_format == 'csv' and isinstance(breakdown, str):
+            return Response({
+                "message": "Kernel breakdown saved to CSV",
+                "file_path": breakdown,
+                "breakdown": None  # CSV file too large to return
+            })
+        
+        # Return JSON breakdown
+        return Response({
+            "message": "Kernel breakdown extracted successfully",
+            "breakdown": breakdown,
+            "file_path": found_path
+        })
+        
+    except Exception as e:
+        print(f"Error in get_kernel_breakdown: {e}")
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 @api_view(["GET"])
@@ -1686,163 +1840,520 @@ Just ask me to compare any aspect of the two runs!"""
                 except Exception as e:
                     return JsonResponse({"status": "error", "message": str(e)}, status=500)
             else:
-                print("Backend: Processing as REGULAR optimization")
-                # Regular (non-comparative) optimization
-                try:
-                    print("Backend: Starting regular optimization")
-                    import os
-                    import numpy as np  # Move numpy import here for np.isclose() usage
-                    # Generate unique run ID
-                    run_id = generate_run_id()
-                    print(f"Backend: Generated run ID: {run_id}")
-                    run_dir = create_run_directory(run_id)
-                    print(f"Backend: Created run directory: {run_dir}")
-                    
-                    # Parse parameters
-                    model = data.get('model', 'CASCADE')
-                    algorithm = data.get('algorithm', 'Genetic Algorithm')
-                    objectives = data.get('objectives', [])
-                    traces = data.get('traces', [])
-                    population = int(data.get('population_size', data.get('population', 50)))
-                    generations = int(data.get('generations', 100))
-
-                    
-                    print(f"Backend: Parsed parameters - model: {model}, algorithm: {algorithm}, objectives: {objectives}")
-                    print(f"Backend: Traces: {traces}, population: {population}, generations: {generations}")
-
-                    
-                    # Validate required fields
-                    if not objectives:
-                        return JsonResponse({"status": "error", "message": "Objectives are required"}, status=400)
-                    if not traces:
-                        return JsonResponse({"status": "error", "message": "At least one trace is required"}, status=400)
-                    
-                    # Validate trace weights sum to 1.0
-                    total_weight = sum(trace.get('weight', 1.0) for trace in traces)
-                    if not np.isclose(total_weight, 1.0):
-                        return JsonResponse({"status": "error", "message": f"Sum of trace weights must be 1.0, got {total_weight}"}, status=400)
-                    
-
-                    
-                    # Run optimization with simple output directory
-                    WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
-                    SIMPLE_OUTPUT_DIR = os.path.join(WORKSPACE, 'dse/results')  # Use simple location
-                    
-                    # Clear the current points.csv for new optimization
-                    current_points_file = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")
-                    with open(current_points_file, 'w') as f:
-                        f.write("")  # Clear the file
-                    print(f"Cleared {current_points_file} for new optimization")
-                    
-                    # Determine trace name
-                    if len(traces) == 1:
-                        trace_name = traces[0].get('name', traces[0])
-                    else:
-                        trace_names = [trace.get('name', trace) for trace in traces]
-                        weights = [trace.get('weight', 1.0) for trace in traces]
-                        trace_name = generate_weighted_trace(trace_names, weights, label='main')
-                    
-                    # Create optimization run in database with correct trace name
-                    optimization_run = RunStorageService.create_optimization_run(
-                        algorithm=algorithm,
-                        model=model,
-                        population_size=population,
-                        generations=generations,
-                        objectives=objectives,
-                        trace_name=trace_name,
-                        trace_sets={'main': traces},
-                        name=f"Optimization Run - {algorithm}",
-                        description=f"Run with {len(traces)} traces"
-                    )
-                    
-                    # Run optimization
-                    ga_result = runGACascade(
-                        pop_size=population, 
-                        n_gen=generations, 
-                        trace=trace_name, 
-                        output_dir=SIMPLE_OUTPUT_DIR
-                    )
-                    
-                    # Ensure GA results are JSON-serializable (convert numpy arrays to lists)
-                    ga_result = convert_ndarrays(ga_result)
-                    print(f"Backend: GA result type after conversion: {type(ga_result)}; length: {len(ga_result) if hasattr(ga_result, '__len__') else 'n/a'}")
-                    
-                    # Create a timestamped backup of the points.csv AFTER optimization completes
-                    import shutil
-                    from datetime import datetime
-                    if os.path.exists(current_points_file) and os.path.getsize(current_points_file) > 0:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        backup_file = os.path.join(SIMPLE_OUTPUT_DIR, f"points_backup_{timestamp}.csv")
-                        shutil.copy2(current_points_file, backup_file)
-                        print(f"Backed up optimization data to: {backup_file}")
-                    else:
-                        print(f"No data to backup - {current_points_file} is empty or doesn't exist")
-                    
-                    # Convert results to design points format
-                    design_points = []
-                    for pt in ga_result:
-                        if isinstance(pt, dict):
-                            chiplets = pt.get('chiplets', {})
-                            design_point = {
-                                'execution_time_ms': pt.get('execution_time_ms', pt.get('x', 0)),
-                                'energy_mj': pt.get('energy_mj', pt.get('y', 0)),
-                                'chiplets': chiplets,
-                                'additional_metrics': pt.get('additional_metrics', {}),
-                                'context_file_path': pt.get('context_file_path', '')
-                            }
-                            design_points.append(design_point)
-                    
-                    # Save results to database
-                    RunStorageService.store_design_points(
-                        optimization_run, 
-                        design_points, 
-                        run_dir
-                    )
-                    
-                    # Run analytics
+                # Check algorithm first to determine path
+                algorithm_raw = data.get('algorithm', 'Genetic Algorithm')
+                print(f"🔍 BACKEND: Non-comparative run. Algorithm: '{algorithm_raw}'")
+                
+                # Full-Factorial path (separate from GA)
+                if algorithm_raw == 'Full-Factorial':
                     try:
-                        points_csv_path = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")  # Use simple location
-                        analytics_dir = os.path.join("analytics")
-                        os.makedirs(analytics_dir, exist_ok=True)
+                        print(f"✅ FULL-FACTORIAL RUN: Confirmed algorithm='Full-Factorial' - proceeding with Full-Factorial")
+                        print(f"✅ FULL-FACTORIAL RUN: Confirmed algorithm='Full-Factorial' - proceeding with Full-Factorial")
+                        print(f"✅ FULL-FACTORIAL RUN: Confirmed - algorithm='Full-Factorial'")
+                        import os, itertools, math, random, time
+                        from api.Evaluator.gaCascade import runSingleCascade
                         
-                        # Rule mining using ChatBot model
-                        rule_mining_result = chat_bot.rule_mining()
-                        rule_mining_path = os.path.join(analytics_dir, "optimization_rule_mining.json")
-                        with open(rule_mining_path, "w") as f:
-                            json.dump({"rule_mining": rule_mining_result}, f)
+                        # Parse parameters
+                        model = data.get('model', 'CASCADE')
+                        # ENFORCE: This is always Full-Factorial
+                        algorithm_display = 'Full-Factorial'
+                        algorithm_db = 'FF'
+                        print(f"✅ FULL-FACTORIAL RUN: Enforcing algorithm_display='{algorithm_display}', algorithm_db='{algorithm_db}'")
+                        selected_types = data.get('selected_types', ["GPU", "Attention", "Sparse", "Convolution"])  # default 4
+                        num_slots = int(data.get('num_slots', 12))
+                        objectives = data.get('objectives', [])
+                        traces = data.get('traces', [])
+                        trace_mode = data.get('trace_mode', 'single')
+                        constraints = data.get('constraints', [])
+                        estimation_only = bool(data.get('estimation_only', False))
+                        timeout_seconds = int(data.get('timeout_seconds', 1800))
+                        mode = data.get('mode', 'offline')  # 'online'|'offline'
                         
-                        # Distance correlation using ChatBot model
-                        # First, load the data to get objective and design values
-                        import csv
-                        objective_vals = []
-                        design_vals = []
-                        with open(points_csv_path, mode='r') as file:
-                            csv_reader = csv.reader(file)
-                            for row in csv_reader:
-                                objective_vals.append([float(row[0]), float(row[1])])  # time, energy
-                                design_vals.append([int(row[2]), int(row[3]), int(row[4]), int(row[5])])  # GPU, Attention, Sparse, Convolution
+                        # Validate m and n bounds
+                        if not selected_types:
+                            return JsonResponse({"status": "error", "message": "selected_types is required"}, status=400)
+                        if len(selected_types) > 6:
+                            return JsonResponse({"status": "error", "message": f"Maximum chiplet types (m) is 6; got {len(selected_types)}"}, status=400)
+                        if num_slots < 0 or num_slots > 20:
+                            return JsonResponse({"status": "error", "message": f"num_slots must be between 0 and 20; got {num_slots}"}, status=400)
+                        if not traces:
+                            return JsonResponse({"status": "error", "message": "At least one trace is required"}, status=400)
                         
-                        distance_corr_result = chat_bot.get_distance_correlations(objective_vals, design_vals)
-                        dist_corr_path = os.path.join(analytics_dir, "optimization_distance_correlation.json")
-                        with open(dist_corr_path, "w") as f:
-                            json.dump({"distance_correlation": distance_corr_result}, f)
+                        # Determine trace name (reuse GA logic)
+                        if isinstance(traces, list) and len(traces) == 1:
+                            trace_name = traces[0].get('name', traces[0])
+                        else:
+                            trace_names = [t.get('name', t) for t in traces]
+                            weights = [t.get('weight', 1.0) for t in traces]
+                            trace_name = generate_weighted_trace(trace_names, weights, label='fullFactorial')
                         
-                        analytics_results = {
-                            'rule_mining': rule_mining_path,
-                            'distance_correlation': dist_corr_path
-                        }
+                        # Design space size: combinations with repetition C(n+m-1, n)
+                        m = len(selected_types)
+                        n = num_slots
+                        def nCr(a, b):
+                            if b < 0 or b > a:
+                                return 0
+                            b = min(b, a - b)
+                            num = 1
+                            den = 1
+                            for i in range(1, b + 1):
+                                num *= a - (b - i)
+                                den *= i
+                            return num // den
+                        design_space_size = nCr(n + m - 1, n)
+                        
+                        # Estimation path: sample k random compositions with warm-up and trimmed mean
+                        if estimation_only:
+                            k = int(data.get('estimation_sample_size', 24))
+                            if design_space_size == 0 or n == 0:
+                                return JsonResponse({
+                                    "status": "success",
+                                    "design_space_size": int(design_space_size),
+                                    "avg_eval_ms": 0.0,
+                                    "estimated_runtime_ms": 0.0,
+                                    "metadata": {"m": m, "n": n}
+                                })
+                            # helper: random composition of n into m parts
+                            def random_composition(total, parts):
+                                if parts == 1:
+                                    return [total]
+                                cuts = sorted(random.sample(range(total + parts - 1), parts - 1))
+                                prev = -1
+                                result = []
+                                for c in cuts + [total + parts - 1]:
+                                    result.append(c - prev - 1)
+                                    prev = c
+                                return result
+                            timings = []
+                            # one warm-up
+                            try:
+                                counts = random_composition(n, m)
+                                chiplet_counts = {t: counts[idx] for idx, t in enumerate(selected_types)}
+                                full_map = {"GPU": 0, "Attention": 0, "Sparse": 0, "Convolution": 0}
+                                full_map.update({k2: int(v2) for k2, v2 in chiplet_counts.items() if k2 in full_map})
+                                runSingleCascade(chiplets=full_map, trace=trace_name, save_to_csv=False)
+                            except Exception:
+                                pass
+                            for _ in range(max(1, k)):
+                                start = time.time()
+                                counts = random_composition(n, m)
+                                # map counts to dict of chiplets (non-selected default to 0 later if needed)
+                                chiplet_counts = {t: counts[idx] for idx, t in enumerate(selected_types)}
+                                # Ensure all four known keys exist for evaluator
+                                full_map = {"GPU": 0, "Attention": 0, "Sparse": 0, "Convolution": 0}
+                                full_map.update({k2: int(v2) for k2, v2 in chiplet_counts.items() if k2 in full_map})
+                                runSingleCascade(chiplets=full_map, trace=trace_name, save_to_csv=False)
+                                end = time.time()
+                                timings.append((end - start) * 1000.0)
+                            timings.sort()
+                            # trimmed mean (middle 60%) and median
+                            if timings:
+                                trim = max(0, int(len(timings) * 0.2))
+                                mid = timings[trim: len(timings) - trim] or timings
+                                trimmed_mean = sum(mid) / len(mid)
+                                median_ms = timings[len(timings)//2]
+                            else:
+                                trimmed_mean = 0.0
+                                median_ms = 0.0
+                            # Conservative per-eval estimate: max(median, trimmed_mean) with overhead
+                            # Overhead accounts for: CSV I/O, database operations, Python overhead, loop overhead
+                            # Real-world overhead is typically 1.8-2.2x due to I/O and DB operations
+                            # Using 1.8x provides a reasonable conservative estimate
+                            per_eval_ms = max(median_ms, trimmed_mean) * 1.8
+                            avg_eval_ms = float(per_eval_ms)
+                            est_runtime_ms = float(design_space_size) * per_eval_ms
+                            return JsonResponse({
+                                "status": "success",
+                                "design_space_size": int(design_space_size),
+                                "avg_eval_ms": avg_eval_ms,
+                                "estimated_runtime_ms": est_runtime_ms,
+                                "metadata": {"m": m, "n": n, "selected_types": selected_types, "samples": k}
+                            })
+                        
+                        # Execute full factorial run
+                        # Generate unique run ID and directories
+                        run_id = generate_run_id()
+                        run_dir = create_run_directory(run_id)
+                        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+                        RESULTS_DIR = os.path.join(WORKSPACE, 'dse/results')
+                        # Clear global points.csv before run
+                        current_points_file = os.path.join(RESULTS_DIR, "points.csv")
+                        with open(current_points_file, 'w') as f:
+                            f.write("")
+                        
+                        # Create run in storage
+                        # CRITICAL: This is always Full-Factorial - enforce algorithm_db='FF'
+                        print(f"✅ FULL-FACTORIAL RUN: Creating database record with algorithm_db='{algorithm_db}' (will display as 'Full-Factorial')")
+                        
+                        run_name = f"Full-Factorial Run"
+                        optimization_run = RunStorageService.create_optimization_run(
+                            algorithm=algorithm_db,  # Always 'FF' for Full-Factorial
+                            model=model,
+                            population_size=0,
+                            generations=0,
+                            objectives=objectives,
+                            trace_name=trace_name,
+                            trace_sets={'main': traces},
+                            name=run_name,
+                            description=f"Full-Factorial m={m}, n={n}, types={selected_types}"
+                        )
+                        
+                        print(f"✅ FULL-FACTORIAL RUN: Created run {optimization_run.run_id}")
+                        print(f"✅ FULL-FACTORIAL RUN: Database algorithm: '{optimization_run.algorithm}', Display: '{optimization_run.get_algorithm_display()}'")
+                        print(f"✅ FULL-FACTORIAL RUN: Expected: algorithm='FF', display='Full-Factorial'")
+                        assert optimization_run.algorithm == 'FF', f"ERROR: Expected algorithm='FF', got '{optimization_run.algorithm}'"
+                        assert optimization_run.get_algorithm_display() == 'Full-Factorial', f"ERROR: Expected display='Full-Factorial', got '{optimization_run.get_algorithm_display()}'"
+                        
+                        # Composition generator (lexicographic)
+                        def compositions(total, parts):
+                            if parts == 1:
+                                yield [total]
+                                return
+                            for i in range(total + 1):
+                                for rest in compositions(total - i, parts - 1):
+                                    yield [i] + rest
+                        
+                        def run_full_factorial_job():
+                            execution_time_seconds = None
+                            try:
+                                start_time = time.time()
+                                evaluated = 0
+                                design_points = []
+                                for counts in compositions(n, m):
+                                    if (time.time() - start_time) > timeout_seconds:
+                                        break
+                                    chiplet_counts = {t: counts[idx] for idx, t in enumerate(selected_types)}
+                                    full_map = {"GPU": 0, "Attention": 0, "Sparse": 0, "Convolution": 0}
+                                    full_map.update({k2: int(v2) for k2, v2 in chiplet_counts.items() if k2 in full_map})
+                                    exec_ms, energy_mj = runSingleCascade(chiplets=full_map, trace=trace_name, save_to_csv=True)
+                                    dp = {
+                                        'execution_time_ms': exec_ms,
+                                        'energy_mj': energy_mj,
+                                        'chiplets': {
+                                            'GPU': full_map['GPU'],
+                                            'Attention': full_map['Attention'],
+                                            'Sparse': full_map['Sparse'],
+                                            'Convolution': full_map['Convolution']
+                                        },
+                                        'additional_metrics': {},
+                                        'context_file_path': ''
+                                    }
+                                    design_points.append(dp)
+                                    evaluated += 1
+                                
+                                # Calculate execution time
+                                execution_time_seconds = time.time() - start_time
+                                
+                                print(f"✅ FULL-FACTORIAL RUN: Evaluated {len(design_points)} design points in {execution_time_seconds:.2f} seconds")
+                                
+                                # Persist points at end
+                                if design_points:
+                                    print(f"✅ FULL-FACTORIAL RUN: Storing {len(design_points)} design points to database")
+                                    RunStorageService.store_design_points(
+                                        optimization_run,
+                                        design_points,
+                                        run_dir
+                                    )
+                                    print(f"✅ FULL-FACTORIAL RUN: Design points stored successfully")
+                                else:
+                                    print(f"⚠️ FULL-FACTORIAL RUN: No design points to store")
+                                    
+                            except Exception as e:
+                                print(f"❌ FULL-FACTORIAL RUN: Error during execution: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                raise  # Re-raise to ensure error handling
+                            finally:
+                                # Always mark run as completed, even if there were errors
+                                try:
+                                    analytics_results = { 'rule_mining': '', 'distance_correlation': '' }
+                                    print(f"✅ FULL-FACTORIAL RUN: Completing run {optimization_run.run_id} with execution_time={execution_time_seconds}")
+                                    completed_run = RunStorageService.complete_run(
+                                        optimization_run, 
+                                        execution_time_seconds=execution_time_seconds,
+                                        analytics_results=analytics_results
+                                    )
+                                    print(f"✅ FULL-FACTORIAL RUN: Run {completed_run.run_id} marked as completed")
+                                    print(f"✅ FULL-FACTORIAL RUN: Run status: {completed_run.status}")
+                                    print(f"✅ FULL-FACTORIAL RUN: Run completed_at: {completed_run.completed_at}")
+                                    print(f"✅ FULL-FACTORIAL RUN: Run algorithm: {completed_run.get_algorithm_display()}")
+                                except Exception as e:
+                                    print(f"❌ FULL-FACTORIAL RUN: Error completing run: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        
+                        if mode == 'online':
+                            # Start background thread and return immediately
+                            t = threading.Thread(target=run_full_factorial_job, daemon=True)
+                            t.start()
+                            return JsonResponse({
+                                'status': 'started',
+                                'data': [],
+                                'plot_data': [],
+                                'run_id': optimization_run.run_id,
+                                'run_directory': run_id,
+                                'metadata': {
+                                    'model': model,
+                                    'algorithm': 'Full-Factorial',
+                                    'objectives': objectives,
+                                    'selected_types': selected_types,
+                                    'num_slots': n,
+                                    'design_space_size': int(design_space_size),
+                                    'evaluated_count': 0,
+                                    'timeout_seconds': timeout_seconds,
+                                    'mode': mode
+                                }
+                            })
+                        else:
+                            # Offline synchronous
+                            run_full_factorial_job()
+                            # Load points from CSV to return
+                            import csv
+                            frontend_results = []
+                            points_path = os.path.join(RESULTS_DIR, 'points.csv')
+                            if os.path.exists(points_path):
+                                with open(points_path, mode='r') as f:
+                                    reader = csv.reader(f)
+                                    for row in reader:
+                                        if len(row) >= 6:
+                                            frontend_results.append({
+                                                'x': float(row[0]),
+                                                'y': float(row[1]),
+                                                'gpu': int(row[2]),
+                                                'attn': int(row[3]),
+                                                'sparse': int(row[4]),
+                                                'conv': int(row[5]),
+                                                'algorithm': algorithm_display,  # Use enforced algorithm_display
+                                                'trace': trace_name
+                                            })
+                            return JsonResponse({
+                                'status': 'success',
+                                'data': frontend_results,
+                                'plot_data': frontend_results,
+                                'run_id': optimization_run.run_id,
+                                'run_directory': run_id,
+                                'metadata': {
+                                    'model': model,
+                                    'algorithm': algorithm_display,  # Use enforced algorithm_display ('Full-Factorial')
+                                    'objectives': objectives,
+                                    'selected_types': selected_types,
+                                    'num_slots': n,
+                                    'design_space_size': int(design_space_size),
+                                    'evaluated_count': len(frontend_results),
+                                    'timeout_seconds': timeout_seconds,
+                                    'mode': mode
+                                }
+                            })
                     except Exception as e:
-                        analytics_results = {
-                            'rule_mining': f"error: {str(e)}",
-                            'distance_correlation': f"error: {str(e)}"
+                        return JsonResponse({"status": "error", "message": str(e)}, status=500)
+                else:
+                    # NOT Full-Factorial - continue to GA path
+                    print(f"✅ GA RUN: Algorithm is '{algorithm_raw}' (not Full-Factorial) - proceeding to GA path")
+                
+                # GA path (only reached if not Full-Factorial)
+                if algorithm_raw != 'Full-Factorial':
+                    print("✅ GA RUN: Processing as REGULAR (Genetic Algorithm) optimization")
+                    # Regular (non-comparative) optimization - THIS IS ALWAYS GA
+                    try:
+                        print("✅ GA RUN: Starting Genetic Algorithm optimization")
+                        import os
+                        import numpy as np  # Move numpy import here for np.isclose() usage
+                        # Generate unique run ID
+                        run_id = generate_run_id()
+                        print(f"Backend: Generated run ID: {run_id}")
+                        run_dir = create_run_directory(run_id)
+                        print(f"Backend: Created run directory: {run_dir}")
+                        
+                        # Parse parameters
+                        model = data.get('model', 'CASCADE')
+                        algorithm_raw = data.get('algorithm', 'Genetic Algorithm')
+                        objectives = data.get('objectives', [])
+                        traces = data.get('traces', [])
+                        population = int(data.get('population_size', data.get('population', 50)))
+                        generations = int(data.get('generations', 100))
+
+                        # CRITICAL: Ensure this is a Genetic Algorithm run
+                        # If Full-Factorial was requested, it should have been handled earlier
+                        if algorithm_raw == 'Full-Factorial':
+                            print(f"⚠️ ERROR: Full-Factorial request reached GA code path! This should not happen.")
+                            return JsonResponse({"status": "error", "message": "Full-Factorial requests should be handled in the Full-Factorial code path"}, status=400)
+                        
+                        # Convert algorithm display name to database code
+                        # Frontend sends: 'Genetic Algorithm' for GA runs
+                        # Database expects: 'GA'
+                        algorithm_map = {
+                            'Genetic Algorithm': 'GA',
+                            'GA': 'GA',  # Already in code format
                         }
+                        algorithm_db = algorithm_map.get(algorithm_raw, 'GA')  # Default to GA (this is the GA code path)
+                        algorithm_display = 'Genetic Algorithm'  # Always use 'Genetic Algorithm' for display in GA runs
+                        
+                        print(f"✅ GA RUN: Received algorithm from frontend: '{algorithm_raw}'")
+                        print(f"✅ GA RUN: This is a Genetic Algorithm run - enforcing algorithm='GA' (display: 'Genetic Algorithm')")
+                        print(f"✅ GA RUN: Database code: '{algorithm_db}', Display name: '{algorithm_display}'")
+                        print(f"✅ GA RUN: Parameters - model: {model}, population: {population}, generations: {generations}, objectives: {objectives}")
+                        
+                        # CRITICAL: Validate GA parameters are not zero
+                        if population <= 0:
+                            print(f"❌ ERROR: GA run requires population_size > 0, got {population}")
+                            return JsonResponse({"status": "error", "message": f"Genetic Algorithm requires population_size > 0, got {population}"}, status=400)
+                        if generations <= 0:
+                            print(f"❌ ERROR: GA run requires generations > 0, got {generations}")
+                            return JsonResponse({"status": "error", "message": f"Genetic Algorithm requires generations > 0, got {generations}"}, status=400)
+
+                        
+                        # Validate required fields
+                        if not objectives:
+                            return JsonResponse({"status": "error", "message": "Objectives are required"}, status=400)
+                        if not traces:
+                            return JsonResponse({"status": "error", "message": "At least one trace is required"}, status=400)
+                        
+                        # Validate trace weights sum to 1.0
+                        total_weight = sum(trace.get('weight', 1.0) for trace in traces)
+                        if not np.isclose(total_weight, 1.0):
+                            return JsonResponse({"status": "error", "message": f"Sum of trace weights must be 1.0, got {total_weight}"}, status=400)
+                        
+                        
+                        # Run optimization with simple output directory
+                        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+                        SIMPLE_OUTPUT_DIR = os.path.join(WORKSPACE, 'dse/results')  # Use simple location
+                        
+                        # Clear the current points.csv for new optimization
+                        current_points_file = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")
+                        with open(current_points_file, 'w') as f:
+                            f.write("")  # Clear the file
+                        print(f"Cleared {current_points_file} for new optimization")
+                        
+                        # Determine trace name
+                        if len(traces) == 1:
+                            trace_name = traces[0].get('name', traces[0])
+                        else:
+                            trace_names = [trace.get('name', trace) for trace in traces]
+                            weights = [trace.get('weight', 1.0) for trace in traces]
+                            trace_name = generate_weighted_trace(trace_names, weights, label='main')
+                        
+                        # Create optimization run in database with correct trace name
+                        # CRITICAL: Use 'GA' for database, but display name will be 'Genetic Algorithm'
+                        print(f"✅ GA RUN: Creating database record with algorithm='{algorithm_db}' (will display as 'Genetic Algorithm')")
+                        print(f"✅ GA RUN: Saving with population_size={population}, generations={generations}")
+                        
+                        optimization_run = RunStorageService.create_optimization_run(
+                            run_id=run_id,  # CRITICAL: Use the run_id we generated, don't let it generate a new one
+                            algorithm=algorithm_db,  # Store as 'GA' in database
+                            model=model,
+                            population_size=population,  # Must be > 0 for GA
+                            generations=generations,  # Must be > 0 for GA
+                            objectives=objectives,
+                            trace_name=trace_name,
+                            trace_sets={'main': traces},
+                            name=f"Optimization Run - {algorithm_display}",
+                            description=f"Genetic Algorithm run with {len(traces)} traces"
+                        )
+                        
+                        # CRITICAL: Verify the run was saved correctly
+                        print(f"✅ GA RUN: Created run {optimization_run.run_id}")
+                        print(f"✅ GA RUN: Expected run_id: '{run_id}', Actual run_id in DB: '{optimization_run.run_id}'")
+                        if optimization_run.run_id != run_id:
+                            print(f"❌ ERROR: Run_id mismatch! Expected '{run_id}', got '{optimization_run.run_id}'")
+                        print(f"✅ GA RUN: Database algorithm: '{optimization_run.algorithm}', display: '{optimization_run.get_algorithm_display()}'")
+                        print(f"✅ GA RUN: Saved population_size: {optimization_run.population_size}, generations: {optimization_run.generations}")
+                        
+                        # Verify saved values match what we intended
+                        if optimization_run.algorithm != 'GA':
+                            print(f"❌ ERROR: Run was saved with wrong algorithm: '{optimization_run.algorithm}' instead of 'GA'")
+                        if optimization_run.population_size != population:
+                            print(f"❌ ERROR: Run was saved with wrong population_size: {optimization_run.population_size} instead of {population}")
+                        if optimization_run.generations != generations:
+                            print(f"❌ ERROR: Run was saved with wrong generations: {optimization_run.generations} instead of {generations}")
+                        
+                        # Run optimization
+                        ga_result = runGACascade(
+                            pop_size=population, 
+                            n_gen=generations, 
+                            trace=trace_name, 
+                            output_dir=SIMPLE_OUTPUT_DIR
+                        )
+                        
+                        # Ensure GA results are JSON-serializable (convert numpy arrays to lists)
+                        ga_result = convert_ndarrays(ga_result)
+                        print(f"Backend: GA result type after conversion: {type(ga_result)}; length: {len(ga_result) if hasattr(ga_result, '__len__') else 'n/a'}")
+                        
+                        # Create a timestamped backup of the points.csv AFTER optimization completes
+                        import shutil
+                        from datetime import datetime
+                        if os.path.exists(current_points_file) and os.path.getsize(current_points_file) > 0:
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            backup_file = os.path.join(SIMPLE_OUTPUT_DIR, f"points_backup_{timestamp}.csv")
+                            shutil.copy2(current_points_file, backup_file)
+                            print(f"Backed up optimization data to: {backup_file}")
+                        else:
+                            print(f"No data to backup - {current_points_file} is empty or doesn't exist")
+                        
+                        # Convert results to design points format
+                        design_points = []
+                        for pt in ga_result:
+                            if isinstance(pt, dict):
+                                chiplets = pt.get('chiplets', {})
+                                design_point = {
+                                    'execution_time_ms': pt.get('execution_time_ms', pt.get('x', 0)),
+                                    'energy_mj': pt.get('energy_mj', pt.get('y', 0)),
+                                    'chiplets': chiplets,
+                                    'additional_metrics': pt.get('additional_metrics', {}),
+                                    'context_file_path': pt.get('context_file_path', '')
+                                }
+                                design_points.append(design_point)
+                        
+                        # Save results to database
+                        RunStorageService.store_design_points(
+                            optimization_run, 
+                            design_points, 
+                            run_dir
+                        )
+                        
+                        # Run analytics
+                        try:
+                            points_csv_path = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")  # Use simple location
+                            analytics_dir = os.path.join("analytics")
+                            os.makedirs(analytics_dir, exist_ok=True)
+                            
+                            # Rule mining using ChatBot model
+                            rule_mining_result = chat_bot.rule_mining()
+                            rule_mining_path = os.path.join(analytics_dir, "optimization_rule_mining.json")
+                            with open(rule_mining_path, "w") as f:
+                                json.dump({"rule_mining": rule_mining_result}, f)
+                            
+                            # Distance correlation using ChatBot model
+                            # First, load the data to get objective and design values
+                            import csv
+                            objective_vals = []
+                            design_vals = []
+                            with open(points_csv_path, mode='r') as file:
+                                csv_reader = csv.reader(file)
+                                for row in csv_reader:
+                                    objective_vals.append([float(row[0]), float(row[1])])  # time, energy
+                                    design_vals.append([int(row[2]), int(row[3]), int(row[4]), int(row[5])])  # GPU, Attention, Sparse, Convolution
+                            
+                            distance_corr_result = chat_bot.get_distance_correlations(objective_vals, design_vals)
+                            dist_corr_path = os.path.join(analytics_dir, "optimization_distance_correlation.json")
+                            with open(dist_corr_path, "w") as f:
+                                json.dump({"distance_correlation": distance_corr_result}, f)
+                            
+                            analytics_results = {
+                                'rule_mining': rule_mining_path,
+                                'distance_correlation': dist_corr_path
+                            }
+                        except Exception as e:
+                            analytics_results = {
+                                'rule_mining': f"error: {str(e)}",
+                                'distance_correlation': f"error: {str(e)}"
+                            }
+                        
+                        # Complete run in database
+                        RunStorageService.complete_run(optimization_run, analytics_results=analytics_results)
                     
-                    # Complete run in database
-                    RunStorageService.complete_run(optimization_run, analytics_results=analytics_results)
-                    
-                    # STEP 1: Automatically inject run context into ChatBot
-                    def generate_run_summary(run_id, config, results, pareto_points):
-                        return f"""✅ Optimization Run Complete: {run_id}
+                        # STEP 1: Automatically inject run context into ChatBot
+                        def generate_run_summary(run_id, config, results, pareto_points):
+                            return f"""✅ Optimization Run Complete: {run_id}
 
 📊 Run Summary:
 • Model: {config['model']}
@@ -1855,35 +2366,35 @@ Just ask me to compare any aspect of the two runs!"""
 • Pareto Front Size: {len(pareto_points)}
 
 The optimization has finished and I now have context about this run. I can help you analyze the results!"""
-                    
-                    def generate_analytics_insights(rule_mining_result, distance_corr_result):
-                        # Extract key insights from analytics results
-                        insights = []
                         
-                        # Rule mining insights
-                        if rule_mining_result and "rule_mining" in rule_mining_result:
-                            rule_str = rule_mining_result["rule_mining"]
-                            # Count rules found
-                            rule_count = len(re.findall(r"Rule:", rule_str))
-                            if rule_count > 0:
-                                insights.append(f"🔍 Rule Mining: Found {rule_count} significant design patterns in Pareto-optimal solutions")
+                        def generate_analytics_insights(rule_mining_result, distance_corr_result):
+                            # Extract key insights from analytics results
+                            insights = []
+                            
+                            # Rule mining insights
+                            if rule_mining_result and "rule_mining" in rule_mining_result:
+                                rule_str = rule_mining_result["rule_mining"]
+                                # Count rules found
+                                rule_count = len(re.findall(r"Rule:", rule_str))
+                                if rule_count > 0:
+                                    insights.append(f"🔍 Rule Mining: Found {rule_count} significant design patterns in Pareto-optimal solutions")
+                            
+                            # Distance correlation insights
+                            if distance_corr_result and "distance_correlation" in distance_corr_result:
+                                corr_str = distance_corr_result["distance_correlation"]
+                                # Extract highest correlations
+                                corr_matches = re.findall(r"Distance correlation between objective (\w+) and chiplet type (\w+) is ([\d.]+)", corr_str)
+                                if corr_matches:
+                                    highest_corr = max(corr_matches, key=lambda x: float(x[2]))
+                                    insights.append(f"📈 Distance Correlation: {highest_corr[1]} chiplets show strongest impact on {highest_corr[0]} ({float(highest_corr[2]):.3f})")
+                            
+                            if insights:
+                                return "\n".join(insights)
+                            else:
+                                return "📊 Analytics completed - ready for detailed analysis"
                         
-                        # Distance correlation insights
-                        if distance_corr_result and "distance_correlation" in distance_corr_result:
-                            corr_str = distance_corr_result["distance_correlation"]
-                            # Extract highest correlations
-                            corr_matches = re.findall(r"Distance correlation between objective (\w+) and chiplet type (\w+) is ([\d.]+)", corr_str)
-                            if corr_matches:
-                                highest_corr = max(corr_matches, key=lambda x: float(x[2]))
-                                insights.append(f"📈 Distance Correlation: {highest_corr[1]} chiplets show strongest impact on {highest_corr[0]} ({float(highest_corr[2]):.3f})")
-                        
-                        if insights:
-                            return "\n".join(insights)
-                        else:
-                            return "📊 Analytics completed - ready for detailed analysis"
-                    
-                    def generate_followup_suggestions():
-                        return """💬 You can ask me about:
+                        def generate_followup_suggestions():
+                            return """💬 You can ask me about:
 
 🎯 **Run Analysis:**
 • "What are the key findings from this optimization run?"
@@ -1911,75 +2422,76 @@ The optimization has finished and I now have context about this run. I can help 
 • "How should I adjust my design constraints?"
 
 Just ask naturally - I have full context of your optimization run!"""
-                    
-                    # Calculate Pareto front
-                    def get_pareto_front(points):
-                        """Find Pareto optimal points"""
-                        pareto_front = []
-                        for i, point in enumerate(points):
-                            is_dominated = False
-                            for j, other_point in enumerate(points):
-                                if i != j:
-                                    # Check if other_point dominates point (both objectives minimized)
-                                    if (other_point['x'] <= point['x'] and other_point['y'] <= point['y']) and \
-                                       (other_point['x'] < point['x'] or other_point['y'] < point['y']):
-                                        is_dominated = True
-                                        break
-                                if not is_dominated:
-                                    pareto_front.append(point)
-                        return pareto_front
-                    
-                    # --- FIX: Always assign frontend_results before use ---
-                    frontend_results = []
-                    for pt in ga_result:
-                        if isinstance(pt, dict):
-                            frontend_results.append({
-                                'x': pt.get('execution_time_ms', pt.get('x', 0)),
-                                'y': pt.get('energy_mj', pt.get('y', 0)),
-                                'gpu': pt.get('chiplets', {}).get('GPU', 0),
-                                'attn': pt.get('chiplets', {}).get('Attention', 0),
-                                'sparse': pt.get('chiplets', {}).get('Sparse', 0),
-                                'conv': pt.get('chiplets', {}).get('Convolution', 0),
-                                'algorithm': algorithm,
-                                'trace': traces[0].get('name', '') if len(traces) == 1 else 'weighted_trace'
-                            })
-                        elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                            frontend_results.append({
-                                'x': float(pt[0]),
-                                'y': float(pt[1]),
-                                'algorithm': algorithm,
-                                'trace': traces[0].get('name', '') if len(traces) == 1 else 'weighted_trace'
-                            })
-                    
-                    print(f"Backend: Converted {len(frontend_results)} points for frontend")
-                    
-                    # Create zip file with complete run data
-                    try:
-                        import zipfile
-                        from datetime import datetime
                         
-                        # Create zip file name based on timestamp (same format as backup files)
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        zip_filename = f"run_{timestamp}.zip"
-                        zip_path = os.path.join(SIMPLE_OUTPUT_DIR, zip_filename)
+                        # Calculate Pareto front
+                        def get_pareto_front(points):
+                            """Find Pareto optimal points"""
+                            pareto_front = []
+                            for i, point in enumerate(points):
+                                is_dominated = False
+                                for j, other_point in enumerate(points):
+                                    if i != j:
+                                        # Check if other_point dominates point (both objectives minimized)
+                                        if (other_point['x'] <= point['x'] and other_point['y'] <= point['y']) and \
+                                           (other_point['x'] < point['x'] or other_point['y'] < point['y']):
+                                            is_dominated = True
+                                            break
+                                    if not is_dominated:
+                                        pareto_front.append(point)
+                            return pareto_front
                         
-                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                            # Add points.csv to zip
-                            points_csv_path = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")
-                            if os.path.exists(points_csv_path):
-                                zipf.write(points_csv_path, "points.csv")
-                                print(f"Added points.csv to zip: {zip_filename}")
+                        # --- FIX: Always assign frontend_results before use ---
+                        frontend_results = []
+                        # CRITICAL: Use algorithm_display for frontend (not algorithm_db)
+                        for pt in ga_result:
+                            if isinstance(pt, dict):
+                                frontend_results.append({
+                                    'x': pt.get('execution_time_ms', pt.get('x', 0)),
+                                    'y': pt.get('energy_mj', pt.get('y', 0)),
+                                    'gpu': pt.get('chiplets', {}).get('GPU', 0),
+                                    'attn': pt.get('chiplets', {}).get('Attention', 0),
+                                    'sparse': pt.get('chiplets', {}).get('Sparse', 0),
+                                    'conv': pt.get('chiplets', {}).get('Convolution', 0),
+                                    'algorithm': algorithm_display,  # Always 'Genetic Algorithm' for GA runs
+                                    'trace': traces[0].get('name', '') if len(traces) == 1 else 'weighted_trace'
+                                })
+                            elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                                frontend_results.append({
+                                    'x': float(pt[0]),
+                                    'y': float(pt[1]),
+                                    'algorithm': algorithm_display,  # Always 'Genetic Algorithm' for GA runs
+                                    'trace': traces[0].get('name', '') if len(traces) == 1 else 'weighted_trace'
+                                })
+                        
+                        print(f"Backend: Converted {len(frontend_results)} points for frontend")
+                        
+                        # Create zip file with complete run data
+                        try:
+                            import zipfile
+                            from datetime import datetime
                             
-                            # Generate and add report.txt to zip
-                            try:
-                                # Generate report content
-                                report_content = f"""Optimization Report
+                            # Create zip file name based on timestamp (same format as backup files)
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            zip_filename = f"run_{timestamp}.zip"
+                            zip_path = os.path.join(SIMPLE_OUTPUT_DIR, zip_filename)
+                            
+                            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                                # Add points.csv to zip
+                                points_csv_path = os.path.join(SIMPLE_OUTPUT_DIR, "points.csv")
+                                if os.path.exists(points_csv_path):
+                                    zipf.write(points_csv_path, "points.csv")
+                                    print(f"Added points.csv to zip: {zip_filename}")
+                                
+                                # Generate and add report.txt to zip
+                                try:
+                                    # Generate report content
+                                    report_content = f"""Optimization Report
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Run ID: {run_id}
 
 Configuration:
 - Model: {model}
-- Algorithm: {algorithm}
+- Algorithm: {algorithm_display}
 - Objectives: {', '.join(objectives)}
 - Population Size: {population}
 - Generations: {generations}
@@ -1991,8 +2503,8 @@ Results Summary:
 
 Design Points:
 """
-                                for i, point in enumerate(frontend_results):
-                                    report_content += f"""
+                                    for i, point in enumerate(frontend_results):
+                                        report_content += f"""
 Point {i+1}:
 - Execution Time: {point.get('x', 0):.2f} ms
 - Energy: {point.get('y', 0):.2f} mJ
@@ -2001,61 +2513,61 @@ Point {i+1}:
 - Sparse Chiplets: {point.get('sparse', 0)}
 - Convolution Chiplets: {point.get('conv', 0)}
 """
-                                # Add report to zip
-                                zipf.writestr("report.txt", report_content)
-                                print(f"Added report.txt to zip: {zip_filename}")
+                                    # Add report to zip
+                                    zipf.writestr("report.txt", report_content)
+                                    print(f"Added report.txt to zip: {zip_filename}")
+                                    
+                                except Exception as e:
+                                    print(f"Error generating report for zip: {e}")
+                                    zipf.writestr("report.txt", f"Error generating report: {str(e)}")
                                 
-                            except Exception as e:
-                                print(f"Error generating report for zip: {e}")
-                                zipf.writestr("report.txt", f"Error generating report: {str(e)}")
+                                # Add metadata.json to zip
+                                metadata = {
+                                    "run_id": run_id,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "model": model,
+                                    "algorithm": algorithm_display,  # Use algorithm_display, not algorithm
+                                    "objectives": objectives,
+                                    "traces": traces,
+                                    "population_size": population,
+                                    "generations": generations,
+                                    "total_points": len(frontend_results),
+                                    "analytics_results": analytics_results
+                                }
+                                zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
+                                print(f"Added metadata.json to zip: {zip_filename}")
                             
-                            # Add metadata.json to zip
-                            metadata = {
-                                "run_id": run_id,
-                                "timestamp": datetime.now().isoformat(),
+                            print(f"Successfully created zip file: {zip_path}")
+                            
+                        except Exception as e:
+                            print(f"Error creating zip file: {e}")
+                            # Don't fail the entire request if zip creation fails
+                        
+                        response = {
+                            "status": "success",
+                            "data": frontend_results,
+                            "plot_data": frontend_results,
+                            "run_id": optimization_run.run_id,
+                            "run_directory": run_id,  # Add the run directory ID
+                            "metadata": {
                                 "model": model,
-                                "algorithm": algorithm,
+                                "algorithm": algorithm_display,  # Always 'Genetic Algorithm' for GA runs
                                 "objectives": objectives,
                                 "traces": traces,
-                                "population_size": population,
-                                "generations": generations,
-                                "total_points": len(frontend_results),
-                                "analytics_results": analytics_results
+                                "population": population,
+                                "generations": generations
                             }
-                            zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
-                            print(f"Added metadata.json to zip: {zip_filename}")
-                        
-                        print(f"Successfully created zip file: {zip_path}")
-                        
-                    except Exception as e:
-                        print(f"Error creating zip file: {e}")
-                        # Don't fail the entire request if zip creation fails
-                    
-                    response = {
-                        "status": "success",
-                        "data": frontend_results,
-                        "plot_data": frontend_results,
-                        "run_id": optimization_run.run_id,
-                        "run_directory": run_id,  # Add the run directory ID
-                        "metadata": {
-                            "model": model,
-                            "algorithm": algorithm,
-                            "objectives": objectives,
-                            "traces": traces,
-                            "population": population,
-                            "generations": generations
                         }
-                    }
-                    
-                    print(f"Backend: Sending response with run_directory: {run_id}")
-                    print(f"Backend: Response structure: {response}")
-                    
-                    return JsonResponse(response)
-                except Exception as e:
-                    print(f"Backend: Error during optimization: {str(e)}")
-                    print(f"Backend: Error type: {type(e)}")
-                    import traceback
-                    print(f"Backend: Traceback: {traceback.format_exc()}")
+                        
+                        print(f"Backend: Sending response with run_directory: {run_id}")
+                        print(f"Backend: Response structure: {response}")
+                        
+                        return JsonResponse(response)
+                    except Exception as e:
+                        print(f"Backend: Error during optimization: {str(e)}")
+                        print(f"Backend: Error type: {type(e)}")
+                        import traceback
+                        print(f"Backend: Traceback: {traceback.format_exc()}")
                     # --- FIX: Always assign frontend_results to avoid UnboundLocalError ---
                     frontend_results = []
                     return JsonResponse({"status": "error", "message": str(e)}, status=500)
@@ -2082,6 +2594,7 @@ def generate_optimization_report(request):
         
         # Get run_id from request parameters
         run_id = request.GET.get('run_id')
+        print(f"🔍 REPORT: Requested run_id: '{run_id}'")
         
         # Fetch run parameters from database
         run_params = {
@@ -2095,34 +2608,98 @@ def generate_optimization_report(request):
         
         if run_id:
             try:
-                optimization_run = OptimizationRun.objects.get(run_id=run_id)
+                # Try exact match first
+                optimization_run = OptimizationRun.objects.filter(run_id=run_id).first()
+                if not optimization_run:
+                    # Try partial match - match at start of run_id (more strict than icontains)
+                    print(f"⚠️ REPORT: Exact run_id match failed for '{run_id}', trying partial match...")
+                    optimization_run = OptimizationRun.objects.filter(run_id__istartswith=run_id).order_by('-created_at').first()
+                    if optimization_run:
+                        print(f"⚠️ REPORT: Partial match found run_id '{optimization_run.run_id}' (algorithm: '{optimization_run.get_algorithm_display()}') - verify this is correct!")
+                
+                if not optimization_run:
+                    raise OptimizationRun.DoesNotExist(f"No run found with run_id: {run_id}")
+                
+                # CRITICAL: Verify and fix algorithm display
+                algorithm_display = optimization_run.get_algorithm_display()
+                if optimization_run.algorithm == 'GA' and algorithm_display != 'Genetic Algorithm':
+                    print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{algorithm_display}'. Forcing to 'Genetic Algorithm'")
+                    algorithm_display = 'Genetic Algorithm'
+                elif optimization_run.algorithm == 'FF' and algorithm_display != 'Full-Factorial':
+                    print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{algorithm_display}'. Forcing to 'Full-Factorial'")
+                    algorithm_display = 'Full-Factorial'
+                
+                # CRITICAL: Validate that GA runs have non-zero population and generations
+                if optimization_run.algorithm == 'GA':
+                    if optimization_run.population_size == 0:
+                        print(f"⚠️ WARNING: GA run {run_id} has population_size=0! This is incorrect for GA runs.")
+                    if optimization_run.generations == 0:
+                        print(f"⚠️ WARNING: GA run {run_id} has generations=0! This is incorrect for GA runs.")
+                
                 run_params = {
                     'model': optimization_run.model,
-                    'algorithm': optimization_run.get_algorithm_display(),
+                    'algorithm': algorithm_display,  # Use verified algorithm display
                     'objectives': optimization_run.objectives,
                     'population_size': optimization_run.population_size,
                     'generations': optimization_run.generations,
                     'trace_name': optimization_run.trace_name or 'gpt-j-65536-weighted'
                 }
-                print(f"Fetched run parameters for {run_id}: {run_params}")
-            except OptimizationRun.DoesNotExist:
-                print(f"OptimizationRun with run_id {run_id} not found, trying to get most recent run")
-                # Try to get the most recent completed run
+                print(f"✅ REPORT: Fetched run parameters for {run_id}")
+                print(f"   - Found run_id in database: '{optimization_run.run_id}'")
+                print(f"   - Database algorithm: '{optimization_run.algorithm}'")
+                print(f"   - Display algorithm: '{algorithm_display}'")
+                print(f"   - Population size: {optimization_run.population_size}")
+                print(f"   - Generations: {optimization_run.generations}")
+                print(f"   - Full run_params: {run_params}")
+            except (OptimizationRun.DoesNotExist, Exception) as e:
+                print(f"❌ REPORT: OptimizationRun with run_id '{run_id}' not found: {e}")
+                
+                # DEBUG: List all runs in database to help debug
+                all_runs = OptimizationRun.objects.all().order_by('-created_at')[:10]
+                print(f"🔍 REPORT: Last 10 runs in database:")
+                for r in all_runs:
+                    print(f"   - run_id: '{r.run_id}', algorithm: '{r.algorithm}' ({r.get_algorithm_display()}), "
+                          f"population: {r.population_size}, generations: {r.generations}, status: {r.status}")
+                
+                print(f"   Trying to get most recent GA run...")
+                # Try to get the most recent completed GA run (not Full-Factorial)
                 try:
                     most_recent_run = OptimizationRun.objects.filter(
-                        status='completed'
+                        status='completed',
+                        algorithm='GA'  # Only get GA runs, not Full-Factorial
                     ).order_by('-created_at').first()
                     
+                    if not most_recent_run:
+                        # Try to get the most recent GA run regardless of status
+                        print("No completed GA run found, trying any GA run...")
+                        most_recent_run = OptimizationRun.objects.filter(
+                            algorithm='GA'
+                        ).order_by('-created_at').first()
+                    
+                    if not most_recent_run:
+                        # Fallback: get any most recent completed run
+                        print("⚠️ WARNING: No GA run found, falling back to most recent completed run (may be Full-Factorial!)")
+                        most_recent_run = OptimizationRun.objects.filter(
+                            status='completed'
+                        ).order_by('-created_at').first()
+                    
                     if most_recent_run:
+                        # Verify algorithm display
+                        algorithm_display = most_recent_run.get_algorithm_display()
+                        if most_recent_run.algorithm == 'GA' and algorithm_display != 'Genetic Algorithm':
+                            algorithm_display = 'Genetic Algorithm'
+                        elif most_recent_run.algorithm == 'FF' and algorithm_display != 'Full-Factorial':
+                            algorithm_display = 'Full-Factorial'
+                        
                         run_params = {
                             'model': most_recent_run.model,
-                            'algorithm': most_recent_run.get_algorithm_display(),
+                            'algorithm': algorithm_display,
                             'objectives': most_recent_run.objectives,
                             'population_size': most_recent_run.population_size,
                             'generations': most_recent_run.generations,
                             'trace_name': most_recent_run.trace_name or 'gpt-j-65536-weighted'
                         }
-                        print(f"Using parameters from most recent run {most_recent_run.run_id}: {run_params}")
+                        print(f"Using parameters from most recent run {most_recent_run.run_id}: algorithm='{most_recent_run.algorithm}' (display: '{algorithm_display}'), run_params={run_params}")
                     else:
                         print("No completed runs found, using default parameters")
                 except Exception as e:
@@ -2130,22 +2707,38 @@ def generate_optimization_report(request):
             except Exception as e:
                 print(f"Error fetching run parameters: {e}, using default parameters")
         else:
-            # No run_id provided, try to get the most recent completed run
+            # No run_id provided, try to get the most recent completed GA run
             try:
+                # Prefer GA runs over Full-Factorial runs
                 most_recent_run = OptimizationRun.objects.filter(
-                    status='completed'
+                    status='completed',
+                    algorithm='GA'  # Only get GA runs by default
                 ).order_by('-created_at').first()
                 
+                if not most_recent_run:
+                    # Fallback: get any most recent completed run
+                    print("No GA run found, falling back to most recent completed run")
+                    most_recent_run = OptimizationRun.objects.filter(
+                        status='completed'
+                    ).order_by('-created_at').first()
+                
                 if most_recent_run:
+                    # Verify algorithm display
+                    algorithm_display = most_recent_run.get_algorithm_display()
+                    if most_recent_run.algorithm == 'GA' and algorithm_display != 'Genetic Algorithm':
+                        algorithm_display = 'Genetic Algorithm'
+                    elif most_recent_run.algorithm == 'FF' and algorithm_display != 'Full-Factorial':
+                        algorithm_display = 'Full-Factorial'
+                    
                     run_params = {
                         'model': most_recent_run.model,
-                        'algorithm': most_recent_run.get_algorithm_display(),
+                        'algorithm': algorithm_display,
                         'objectives': most_recent_run.objectives,
                         'population_size': most_recent_run.population_size,
                         'generations': most_recent_run.generations,
                         'trace_name': most_recent_run.trace_name or 'gpt-j-65536-weighted'
                     }
-                    print(f"Using parameters from most recent run {most_recent_run.run_id}: {run_params}")
+                    print(f"Using parameters from most recent run {most_recent_run.run_id}: algorithm='{most_recent_run.algorithm}' (display: '{algorithm_display}'), run_params={run_params}")
                 else:
                     print("No completed runs found, using default parameters")
             except Exception as e:
@@ -2738,21 +3331,22 @@ def add_custom_point(request):
 
 @api_view(["GET"])
 def list_backup_files(request):
-    """List available backup files for loading previous runs"""
+    """List available backup files AND database runs for loading previous runs"""
     try:
         import os
         import glob
         from datetime import datetime
+        from .models import OptimizationRun
         
         WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
         results_dir = os.path.join(WORKSPACE, 'dse/results')
         
-        # Find all backup files
+        file_list = []
+        
+        # 1. Find all CSV backup files
         backup_pattern = os.path.join(results_dir, "points_backup_*.csv")
         backup_files = glob.glob(backup_pattern)
         
-        # Convert to list of file info
-        file_list = []
         for file_path in backup_files:
             filename = os.path.basename(file_path)
             timestamp_str = filename.replace("points_backup_", "").replace(".csv", "")
@@ -2764,15 +3358,49 @@ def list_backup_files(request):
                     'filename': filename,
                     'timestamp': timestamp.isoformat(),
                     'display_name': f"Run {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
-                    'file_path': file_path
+                    'file_path': file_path,
+                    'source': 'backup_file'
                 }
                 file_list.append(file_info)
             except ValueError:
                 # Skip files with invalid timestamps
                 continue
         
+        # 2. Get all completed optimization runs from database
+        completed_runs = OptimizationRun.objects.filter(status='completed').order_by('-created_at')
+        
+        for run in completed_runs:
+            try:
+                # Use run_id as the identifier, create display name from run name or timestamp
+                # Consistent format: "Custom Name (Algorithm)" or "Run YYYY-MM-DD HH:MM:SS (Algorithm)"
+                algorithm_display = run.get_algorithm_display()
+                if run.name:
+                    # Custom name: "My Custom Run (Genetic Algorithm)"
+                    display_name = f"{run.name} ({algorithm_display})"
+                else:
+                    # No custom name: "Run 2025-01-15 14:30:00 (Genetic Algorithm)"
+                    display_name = f"Run {run.created_at.strftime('%Y-%m-%d %H:%M:%S')} ({algorithm_display})"
+                
+                # For database runs, we'll use the run_id as the "filename" identifier
+                file_info = {
+                    'filename': run.run_id,  # Use run_id as identifier
+                    'timestamp': run.created_at.isoformat(),
+                    'display_name': display_name,
+                    'file_path': '',  # No file path for database runs
+                    'source': 'database',
+                    'run_id': run.run_id,
+                    'algorithm': algorithm_display,
+                    'total_designs': run.total_designs_evaluated
+                }
+                file_list.append(file_info)
+            except Exception as e:
+                print(f"Error processing database run {run.run_id}: {e}")
+                continue
+        
         # Sort by timestamp (newest first)
         file_list.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        print(f"✅ list_backup_files: Returning {len(file_list)} runs ({len(backup_files)} backup files + {completed_runs.count()} database runs)")
         
         return JsonResponse({
             'status': 'success',
@@ -2780,6 +3408,8 @@ def list_backup_files(request):
         })
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({
             'status': 'error',
             'message': str(e)
@@ -2793,7 +3423,7 @@ def test_endpoint(request):
 @api_view(["POST"])
 def load_previous_run(request):
     """
-    Load a previous optimization run from backup file.
+    Load a previous optimization run from backup file OR database.
     """
     try:
         import os
@@ -2801,6 +3431,7 @@ def load_previous_run(request):
         import shutil
         import zipfile
         from datetime import datetime
+        from .models import OptimizationRun, DesignPoint
         
         data = json.loads(request.body)
         backup_filename = data.get('backup_filename')
@@ -2810,6 +3441,80 @@ def load_previous_run(request):
         
         WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
         results_dir = os.path.join(WORKSPACE, 'dse/results')
+        
+        # Check if this is a database run (run_id format)
+        # Database runs have format: run_YYYYMMDD_HHMMSS_<uuid>
+        # Backup files have format: points_backup_YYYYMMDD_HHMMSS.csv
+        is_database_run = False
+        optimization_run = None
+        
+        # Try to find it in database first
+        try:
+            optimization_run = OptimizationRun.objects.filter(run_id=backup_filename).first()
+            if optimization_run:
+                is_database_run = True
+                print(f"✅ load_previous_run: Found database run with run_id: {backup_filename}")
+        except Exception as e:
+            print(f"Error looking up run in database: {e}")
+        
+        if is_database_run and optimization_run:
+            # Load from database
+            points = []
+            design_points = optimization_run.design_points.all()
+            
+            for dp in design_points:
+                point = {
+                    'x': dp.execution_time_ms,
+                    'y': dp.energy_mj,
+                    'gpu': dp.gpu_count,
+                    'attn': dp.attention_count,
+                    'sparse': dp.sparse_count,
+                    'conv': dp.convolution_count,
+                    'type': 'optimization',
+                    'algorithm': optimization_run.get_algorithm_display()
+                }
+                points.append(point)
+            
+            print(f"Loaded {len(points)} points from database run: {optimization_run.run_id}")
+            
+            # Create temporary points.csv for plotting
+            run_id = f"loaded_run_{optimization_run.run_id}"
+            temp_points_path = os.path.join(results_dir, f"temp_points_{run_id}.csv")
+            with open(temp_points_path, mode='w', newline='') as file:
+                csv_writer = csv.writer(file)
+                for point in points:
+                    csv_writer.writerow([
+                        point['x'],
+                        point['y'],
+                        point['gpu'],
+                        point['attn'],
+                        point['sparse'],
+                        point['conv'],
+                        point.get('type', 'optimization')
+                    ])
+            
+            # Build metadata from database run
+            metadata = {
+                'algorithm': optimization_run.get_algorithm_display(),
+                'model': optimization_run.model,
+                'objectives': optimization_run.objectives,
+                'population_size': optimization_run.population_size,
+                'generations': optimization_run.generations,
+                'trace_name': optimization_run.trace_name,
+                'total_designs': optimization_run.total_designs_evaluated,
+                'created_at': optimization_run.created_at.isoformat(),
+                'completed_at': optimization_run.completed_at.isoformat() if optimization_run.completed_at else None
+            }
+            
+            return JsonResponse({
+                "status": "success",
+                "data": points,
+                "metadata": metadata,
+                "run_id": run_id,
+                "source": "database"
+            })
+        
+        # Fall back to backup file loading
         backup_file_path = os.path.join(results_dir, backup_filename)
         
         # Check if backup file exists
@@ -3146,12 +3851,17 @@ def get_previous_run_report(request):
         th {{ background-color: #3498db; color: white; font-weight: 600; }}
         tr:nth-child(even) {{ background-color: #f2f2f2; }}
         tr:hover {{ background-color: #e8f4fd; }}
-        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
-        .stat-card {{ background: white; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
-        .stat-number {{ font-size: 2em; font-weight: bold; color: #3498db; }}
-        .stat-label {{ color: #7f8c8d; margin-top: 5px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 15px 0; }}
+        .stat-card {{ background: white; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+        .stat-number {{ font-size: 1.5em; font-weight: bold; color: #3498db; }}
+        .stat-label {{ color: #7f8c8d; margin-top: 5px; font-size: 0.9em; }}
         .header-info {{ background: #ecf0f1; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
         .header-info p {{ margin: 5px 0; color: #2c3e50; }}
+        .highlight {{ background-color: #fff3cd; padding: 2px 4px; border-radius: 3px; }}
+        .better {{ background-color: #d4edda; color: #155724; padding: 2px 4px; border-radius: 3px; }}
+        .worse {{ background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; }}
+        .insight-box {{ background: #e8f4fd; border-left: 4px solid #3498db; padding: 15px; margin: 15px 0; border-radius: 4px; }}
+        .recommendation {{ background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 15px; margin: 15px 0; border-radius: 4px; }}
     </style>
 </head>
 <body>
@@ -4191,3 +4901,4 @@ def generate_comparative_report(request):
         import traceback
         traceback.print_exc()
         return JsonResponse({"status": "error", "message": str(e)}, status=500)
+
