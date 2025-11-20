@@ -579,36 +579,36 @@ def get_chat_response(request):
             return JsonResponse({"message": "Sorry, I encountered an error highlighting the designs. Please try again."})
     
     # Check for optimization run intent
-    if content and ("run optimization" in content.lower() or "start ga" in content.lower()):
-        # --- Extract parameters (use existing or dummy logic for now) ---
-        # For demo, use dummy values or parse from content
-        model = "CASCADE"
-        algorithm = "Genetic Algorithm"
-        trace = "gpt-j-65536-weighted"
-        objectives = ["Energy", "Runtime"]
-        pop_size = 50
-        generations = 100
-        # TODO: Replace above with actual parsing logic if available
-        # Step 1: Immediately return a confirmation message
-        chat_reply = f"Optimization run started using Genetic Algorithm on trace '{trace}' optimizing for {', '.join(objectives)}. I'll let you know when it's done!"
-        # Step 2: Trigger GA run in background
-        def run_async():
-            # You may want to call run_optimization or runGACascade here
-            # For demo, just call runGACascade
-            runGACascade(pop_size=pop_size, n_gen=generations, trace=trace)
-            # When done, add a notification to chat history
-            chat_bot.messages.append({
-                "role": "assistant",
-                "content": f"Optimization run on trace '{trace}' is complete! Check the plot for results."
-            })
-        threading.Thread(target=run_async).start()
-        # Expose a hint that a run has started; frontend can poll for latest
-        return JsonResponse({"message": chat_reply, "run_started": True})
-    if content and "run" in content.lower() and any(x in content.lower() for x in ["model", "trace", "population"]):
-        parsed_result = chat_bot.handle_natural_language_optimization(content)
-        # If we can attach a run id in future, include it here
-        return Response({"response": parsed_result["message"], "run_started": parsed_result.get("status") == "success"})
-    # Try RAG path first
+    # if content and ("run optimization" in content.lower() or "start ga" in content.lower()):
+    #     # --- Extract parameters (use existing or dummy logic for now) ---
+    #     # For demo, use dummy values or parse from content
+    #     model = "CASCADE"
+    #     algorithm = "Genetic Algorithm"
+    #     trace = "gpt-j-65536-weighted"
+    #     objectives = ["Energy", "Runtime"]
+    #     pop_size = 50
+    #     generations = 100
+    #     # TODO: Replace above with actual parsing logic if available
+    #     # Step 1: Immediately return a confirmation message
+    #     chat_reply = f"Optimization run started using Genetic Algorithm on trace '{trace}' optimizing for {', '.join(objectives)}. I'll let you know when it's done!"
+    #     # Step 2: Trigger GA run in background
+    #     def run_async():
+    #         # You may want to call run_optimization or runGACascade here
+    #         # For demo, just call runGACascade
+    #         runGACascade(pop_size=pop_size, n_gen=generations, trace=trace)
+    #         # When done, add a notification to chat history
+    #         chat_bot.messages.append({
+    #             "role": "assistant",
+    #             "content": f"Optimization run on trace '{trace}' is complete! Check the plot for results."
+    #         })
+    #     threading.Thread(target=run_async).start()
+    #     # Expose a hint that a run has started; frontend can poll for latest
+    #     return JsonResponse({"message": chat_reply, "run_started": True})
+    # if content and "run" in content.lower() and any(x in content.lower() for x in ["model", "trace", "population"]):
+    #     parsed_result = chat_bot.handle_natural_language_optimization(content)
+    #     # If we can attach a run id in future, include it here
+    #     return Response({"response": parsed_result["message"], "run_started": parsed_result.get("status") == "success"})
+    # # Try RAG path first
     try:
         filters = {}
         # Optional: pass simple filters derived from query params
@@ -782,7 +782,7 @@ def get_point_context(request):
             return Response({"error": "run_id is required"}, status=400)
         
         # Construct the file path
-        base_path = "/Users/ramyagotika/research-work/chiplet/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results"
+        base_path = "/chiplet-server/api/Evaluator/cascade/chiplet_model/dse/results"
         
         # Construct candidate run directories to handle different formats
         candidates = []
@@ -934,7 +934,7 @@ def add_info(request):
     """
     Add information to the chatbot.
     """
-    # print("Made it to the add_info function")
+    print("Made it to the add_info function")
     exe = request.GET.get("exe")
     energy = request.GET.get("energy")
     gpu = request.GET.get("gpu")
