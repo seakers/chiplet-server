@@ -1259,6 +1259,290 @@ class ChatBotModel():
         
         print(f"ChatBot: Added run context - Summary: {len(summary_text)} chars, Analytics: {len(analytics_text) if analytics_text else 0} chars, Suggestions: {len(suggestions) if suggestions else 0} chars")
 
+    def extract_kernel_breakdown(self, context_file_path=None, output_format='json'):
+        """
+        Extract condensed kernel-wise breakdown of energy and runtime from context file.
+        
+        Args:
+            context_file_path: Path to context JSON file. If None, uses self.full_data
+            output_format: 'json' or 'csv' for output format
+            
+        Returns:
+            Dictionary with kernel breakdown data, or path to saved file
+        """
+        # Load data if file path provided
+        if context_file_path:
+            try:
+                with open(context_file_path, 'r') as f:
+                    kernel_data = json.load(f)
+            except Exception as e:
+                print(f"Error loading context file: {e}")
+                return None
+        elif hasattr(self, 'full_data') and len(self.full_data) > 0:
+            kernel_data = self.full_data
+        else:
+            print("No kernel data available for extraction")
+            return None
+        
+        # Extract condensed breakdown
+        breakdown = {
+            'total_energy_mj': 0,
+            'total_runtime_ms': 0,
+            'kernels': []
+        }
+        
+        # Process each kernel
+        for kernel in kernel_data:
+            kernel_name = kernel.get('name', 'Unknown')
+            kernel_total = kernel.get('total', {})
+            kernel_energy = kernel_total.get('energy', 0) * 1000  # Convert to mJ
+            kernel_runtime = kernel_total.get('exe_time', 0) * 1000  # Convert to ms
+            
+            # Get chiplet breakdown - top 5 energy consumers per kernel
+            chiplets = kernel.get('chiplets', {})
+            chiplet_breakdown = []
+            
+            for chiplet_id, chiplet_data in chiplets.items():
+                chiplet_energy = chiplet_data.get('energy', 0) * 1000  # Convert to mJ
+                chiplet_runtime = chiplet_data.get('exe_time', 0) * 1000  # Convert to ms
+                chiplet_work = chiplet_data.get('work', 0)
+                chiplet_name = chiplet_data.get('name', 'Unknown')
+                
+                chiplet_breakdown.append({
+                    'chiplet_id': str(chiplet_id),
+                    'chiplet_type': chiplet_name,
+                    'energy_mj': round(chiplet_energy, 3),
+                    'runtime_ms': round(chiplet_runtime, 3),
+                    'work': chiplet_work
+                })
+            
+            # Sort by energy (descending) and take top 5
+            chiplet_breakdown.sort(key=lambda x: x['energy_mj'], reverse=True)
+            top_chiplets = chiplet_breakdown[:5]
+            
+            # Calculate energy percentage for top chiplets
+            for chiplet in top_chiplets:
+                if kernel_energy > 0:
+                    chiplet['energy_percentage'] = round((chiplet['energy_mj'] / kernel_energy) * 100, 2)
+                else:
+                    chiplet['energy_percentage'] = 0
+            
+            breakdown['kernels'].append({
+                'kernel_name': kernel_name,
+                'kernel_energy_mj': round(kernel_energy, 3),
+                'kernel_runtime_ms': round(kernel_runtime, 3),
+                'energy_percentage': 0,  # Will calculate after total
+                'top_chiplets': top_chiplets,
+                'num_chiplets_involved': len(chiplets)
+            })
+            
+            breakdown['total_energy_mj'] += kernel_energy
+            breakdown['total_runtime_ms'] += kernel_runtime
+        
+        # Calculate energy percentages for each kernel
+        if breakdown['total_energy_mj'] > 0:
+            for kernel in breakdown['kernels']:
+                kernel['energy_percentage'] = round(
+                    (kernel['kernel_energy_mj'] / breakdown['total_energy_mj']) * 100, 2
+                )
+        
+        breakdown['total_energy_mj'] = round(breakdown['total_energy_mj'], 3)
+        breakdown['total_runtime_ms'] = round(breakdown['total_runtime_ms'], 3)
+        
+        # Sort kernels by energy (descending)
+        breakdown['kernels'].sort(key=lambda x: x['kernel_energy_mj'], reverse=True)
+        
+        # Identify top energy-consuming kernels (top 10)
+        breakdown['top_energy_kernels'] = breakdown['kernels'][:10]
+        
+        # Identify bottleneck chiplet type across all kernels
+        # IMPORTANT: We need to calculate totals from ALL chiplets, not just top 5
+        # So we need to go back to the original kernel_data to get complete totals
+        chiplet_type_totals = {}
+        
+        # Re-process kernel_data to get ALL chiplet energy (not just top 5)
+        for kernel in kernel_data:
+            kernel_name = kernel.get('name', 'Unknown')
+            chiplets = kernel.get('chiplets', {})
+            
+            for chiplet_id, chiplet_data in chiplets.items():
+                chiplet_energy = chiplet_data.get('energy', 0) * 1000  # Convert to mJ
+                chiplet_type = chiplet_data.get('name', 'Unknown')
+                
+                if chiplet_type not in chiplet_type_totals:
+                    chiplet_type_totals[chiplet_type] = {
+                        'total_energy_mj': 0,
+                        'count': 0,
+                        'kernels': []
+                    }
+                
+                chiplet_type_totals[chiplet_type]['total_energy_mj'] += chiplet_energy
+                chiplet_type_totals[chiplet_type]['count'] += 1
+                if kernel_name not in chiplet_type_totals[chiplet_type]['kernels']:
+                    chiplet_type_totals[chiplet_type]['kernels'].append(kernel_name)
+        
+        # Calculate averages and find bottleneck
+        bottleneck_type = None
+        max_avg_energy = 0
+        for chiplet_type, stats in chiplet_type_totals.items():
+            stats['avg_energy_mj'] = round(stats['total_energy_mj'] / stats['count'], 3) if stats['count'] > 0 else 0
+            if stats['avg_energy_mj'] > max_avg_energy:
+                max_avg_energy = stats['avg_energy_mj']
+                bottleneck_type = chiplet_type
+        
+        breakdown['chiplet_type_summary'] = chiplet_type_totals
+        breakdown['energy_bottleneck'] = {
+            'chiplet_type': bottleneck_type,
+            'avg_energy_mj': max_avg_energy,
+            'total_energy_mj': chiplet_type_totals.get(bottleneck_type, {}).get('total_energy_mj', 0),
+            'kernels_affected': chiplet_type_totals.get(bottleneck_type, {}).get('kernels', [])
+        }
+        
+        # Save to file if requested
+        if output_format == 'csv':
+            return self._save_breakdown_csv(breakdown, context_file_path)
+        elif output_format == 'json' and context_file_path:
+            return self._save_breakdown_json(breakdown, context_file_path)
+        
+        return breakdown
+    
+    def _save_breakdown_csv(self, breakdown, context_file_path=None):
+        """Save kernel breakdown to CSV file"""
+        import os
+        from datetime import datetime
+        
+        # Create output directory
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'analytics')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if context_file_path:
+            design_name = os.path.basename(context_file_path).replace('.json', '')
+            csv_path = os.path.join(output_dir, f"kernel_breakdown_{design_name}_{timestamp}.csv")
+        else:
+            csv_path = os.path.join(output_dir, f"kernel_breakdown_{timestamp}.csv")
+        
+        # Write CSV
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            # Header
+            writer.writerow(['Kernel Name', 'Kernel Energy (mJ)', 'Kernel Runtime (ms)', 
+                           'Energy %', 'Top Chiplet Type', 'Top Chiplet Energy (mJ)', 
+                           'Top Chiplet Energy %', 'Num Chiplets'])
+            
+            # Write kernel data
+            for kernel in breakdown['kernels']:
+                top_chiplet = kernel['top_chiplets'][0] if kernel['top_chiplets'] else {}
+                writer.writerow([
+                    kernel['kernel_name'],
+                    kernel['kernel_energy_mj'],
+                    kernel['kernel_runtime_ms'],
+                    kernel['energy_percentage'],
+                    top_chiplet.get('chiplet_type', 'N/A'),
+                    top_chiplet.get('energy_mj', 0),
+                    top_chiplet.get('energy_percentage', 0),
+                    kernel['num_chiplets_involved']
+                ])
+            
+            # Summary row
+            writer.writerow([])
+            writer.writerow(['SUMMARY'])
+            writer.writerow(['Total Energy (mJ)', breakdown['total_energy_mj']])
+            writer.writerow(['Total Runtime (ms)', breakdown['total_runtime_ms']])
+            writer.writerow(['Energy Bottleneck', breakdown['energy_bottleneck']['chiplet_type']])
+            writer.writerow(['Bottleneck Avg Energy (mJ)', breakdown['energy_bottleneck']['avg_energy_mj']])
+        
+        print(f"Kernel breakdown saved to CSV: {csv_path}")
+        return csv_path
+    
+    def _save_breakdown_json(self, breakdown, context_file_path=None):
+        """Save kernel breakdown to JSON file"""
+        import os
+        from datetime import datetime
+        
+        # Create output directory
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'analytics')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if context_file_path:
+            design_name = os.path.basename(context_file_path).replace('.json', '')
+            json_path = os.path.join(output_dir, f"kernel_breakdown_{design_name}_{timestamp}.json")
+        else:
+            json_path = os.path.join(output_dir, f"kernel_breakdown_{timestamp}.json")
+        
+        # Write JSON
+        with open(json_path, 'w') as f:
+            json.dump(breakdown, f, indent=2)
+        
+        print(f"Kernel breakdown saved to JSON: {json_path}")
+        return json_path
+    
+    def _format_breakdown_for_llm(self, breakdown):
+        """Format kernel breakdown as concise text for LLM context with specific numbers"""
+        summary = f"""KERNEL-WISE ENERGY BREAKDOWN ANALYSIS - HIGH ENERGY CONSUMPTION FOCUS
+Total Energy: {breakdown['total_energy_mj']} mJ | Total Runtime: {breakdown['total_runtime_ms']} ms
+
+TOP HIGH ENERGY-CONSUMING KERNELS (sorted by energy, showing what causes higher consumption):
+"""
+        for i, kernel in enumerate(breakdown['top_energy_kernels'][:10], 1):
+            top_chiplet = kernel['top_chiplets'][0] if kernel['top_chiplets'] else {}
+            summary += f"{i}. Kernel: '{kernel['kernel_name']}'\n"
+            summary += f"   - Kernel Energy: {kernel['kernel_energy_mj']} mJ ({kernel['energy_percentage']}% of total)\n"
+            summary += f"   - Kernel Runtime: {kernel['kernel_runtime_ms']} ms\n"
+            summary += f"   - Top Energy Chiplet: {top_chiplet.get('chiplet_type', 'N/A')} ({top_chiplet.get('energy_mj', 0)} mJ, {top_chiplet.get('energy_percentage', 0)}% of kernel)\n"
+            summary += f"   - Chiplets Involved: {kernel['num_chiplets_involved']}\n\n"
+        
+        # Energy bottleneck with exact numbers - focusing on high energy consumption
+        bottleneck = breakdown['energy_bottleneck']
+        summary += f"ENERGY BOTTLENECK IDENTIFICATION (Highest Energy Consumer):\n"
+        summary += f"Primary Bottleneck Chiplet Type: {bottleneck['chiplet_type']}\n"
+        summary += f"- Average Energy per {bottleneck['chiplet_type']} chiplet: {bottleneck['avg_energy_mj']} mJ\n"
+        summary += f"- Total Energy from {bottleneck['chiplet_type']} chiplets: {bottleneck['total_energy_mj']} mJ\n"
+        summary += f"- Percentage of total energy: {(bottleneck['total_energy_mj'] / breakdown['total_energy_mj'] * 100) if breakdown['total_energy_mj'] > 0 else 0:.2f}%\n"
+        summary += f"- Number of kernels affected: {len(bottleneck['kernels_affected'])}\n"
+        summary += f"- Affected kernels: {', '.join(bottleneck['kernels_affected'][:10])}\n\n"
+        
+        # Calculate average energy across all chiplet types to identify high consumers
+        all_avg_energies = [stats['avg_energy_mj'] for stats in breakdown['chiplet_type_summary'].values()]
+        avg_energy_threshold = sum(all_avg_energies) / len(all_avg_energies) if all_avg_energies else 0
+        
+        # Focus ONLY on chiplet types causing HIGHER energy consumption
+        # Show top energy consumers (above average or top 3-5 highest)
+        sorted_types = sorted(breakdown['chiplet_type_summary'].items(), 
+                             key=lambda x: x[1]['avg_energy_mj'], reverse=True)
+        
+        # Get top high energy consumers (at least top 3, or those above average threshold)
+        high_energy_types = []
+        for chiplet_type, stats in sorted_types:
+            if len(high_energy_types) < 3 or stats['avg_energy_mj'] >= avg_energy_threshold:
+                high_energy_types.append((chiplet_type, stats))
+        
+        summary += "HIGH ENERGY CONSUMERS (Chiplet Types Causing Higher Energy Consumption):\n"
+        summary += "Focus ONLY on these chiplet types that are causing higher energy consumption:\n\n"
+        for chiplet_type, stats in high_energy_types:
+            pct = (stats['total_energy_mj'] / breakdown['total_energy_mj'] * 100) if breakdown['total_energy_mj'] > 0 else 0
+            summary += f"{chiplet_type}:\n"
+            summary += f"  - Average energy per chiplet: {stats['avg_energy_mj']} mJ\n"
+            summary += f"  - Total energy: {stats['total_energy_mj']} mJ ({pct:.2f}% of total)\n"
+            summary += f"  - Number of instances: {stats['count']}\n"
+            summary += f"  - Present in kernels: {', '.join(stats['kernels'][:5])}{'...' if len(stats['kernels']) > 5 else ''}\n\n"
+        
+        summary += "INSTRUCTIONS FOR ANALYSIS:\n"
+        summary += "When answering energy bottleneck questions, focus ONLY on what is causing HIGHER energy consumption. "
+        summary += "Use the EXACT numbers provided above for HIGH ENERGY CONSUMERS only. "
+        summary += "Be specific about:\n"
+        summary += "1. The exact chiplet type that is the bottleneck (from the HIGH ENERGY CONSUMERS list above)\n"
+        summary += "2. The exact average energy value (in mJ) showing why it's a high consumer\n"
+        summary += "3. The exact total energy contribution (in mJ and percentage) showing its impact\n"
+        summary += "4. The specific kernels where this chiplet type appears as the top consumer\n"
+        summary += "5. Compare the bottleneck chiplet's energy values ONLY with other HIGH ENERGY CONSUMERS from the list above.\n"
+        summary += "DO NOT mention low energy consumers - focus exclusively on what causes higher energy consumption.\n"
+        
+        return summary
+    
     def add_enhanced_energy_analysis(self):
         """
         Add comprehensive energy analysis context to help with energy bottleneck questions.
@@ -1314,8 +1598,8 @@ class ChatBotModel():
                 'type_statistics': type_stats
             })
         
-        # Create concise energy analysis message
-        analysis_message = "Energy Bottleneck Analysis:\n\n"
+        # Create concise energy analysis message focusing on HIGH energy consumption
+        analysis_message = "Energy Bottleneck Analysis - High Energy Consumers:\n\n"
         
         # Identify the main bottleneck across all kernels
         all_type_stats = {}
@@ -1337,7 +1621,11 @@ class ChatBotModel():
                 all_type_stats[chiplet_type]['count']
             )
         
-        # Find the main bottleneck
+        # Calculate threshold for high energy consumers (above average)
+        all_avg_energies = [stats['avg_energy'] for stats in all_type_stats.values()]
+        avg_threshold = sum(all_avg_energies) / len(all_avg_energies) if all_avg_energies else 0
+        
+        # Find the main bottleneck (highest energy consumer)
         main_bottleneck = max(all_type_stats.items(), key=lambda x: x[1]['avg_energy'])
         bottleneck_type = main_bottleneck[0]
         bottleneck_energy = main_bottleneck[1]['avg_energy']
@@ -1348,22 +1636,30 @@ class ChatBotModel():
             if analysis['type_statistics'].get(bottleneck_type, {}).get('avg_energy', 0) > 0:
                 supporting_kernels.append(analysis['kernel_name'])
         
-        analysis_message += f"Main Energy Bottleneck: {bottleneck_type.upper()} chiplets\n"
+        analysis_message += f"Main Energy Bottleneck (Highest Consumer): {bottleneck_type.upper()} chiplets\n"
         analysis_message += f"Average Energy: {bottleneck_energy:.3f} mJ per chiplet\n"
         analysis_message += f"Evidence: Observed in {len(supporting_kernels)} kernel(s): {', '.join(supporting_kernels)}\n\n"
         
-        # Show top 3 energy consumers from the first kernel for quick reference
+        # Show top high energy consumers from the first kernel
         if energy_analysis:
             first_kernel = energy_analysis[0]
-            analysis_message += f"Top Energy Consumers ({first_kernel['kernel_name']} kernel):\n"
+            analysis_message += f"Top High Energy Consumers ({first_kernel['kernel_name']} kernel):\n"
             for i, (chiplet_id, chiplet_data) in enumerate(first_kernel['top_consumers'], 1):
-                analysis_message += f"{i}. Chiplet {chiplet_id} ({chiplet_data.get('name', 'unknown')}): {chiplet_data.get('energy', 0):.3f} mJ\n"
+                chiplet_energy = chiplet_data.get('energy', 0)
+                analysis_message += f"{i}. Chiplet {chiplet_id} ({chiplet_data.get('name', 'unknown')}): {chiplet_energy:.3f} mJ\n"
             analysis_message += "\n"
         
-        # Quick energy breakdown by type
-        analysis_message += "Energy Breakdown by Type:\n"
-        for chiplet_type, stats in sorted(all_type_stats.items(), key=lambda x: x[1]['avg_energy'], reverse=True):
+        # Show ONLY high energy consumers (above average threshold or top 3)
+        sorted_types = sorted(all_type_stats.items(), key=lambda x: x[1]['avg_energy'], reverse=True)
+        high_energy_types = []
+        for chiplet_type, stats in sorted_types:
+            if len(high_energy_types) < 3 or stats['avg_energy'] >= avg_threshold:
+                high_energy_types.append((chiplet_type, stats))
+        
+        analysis_message += "High Energy Consumers (Causing Higher Energy Consumption):\n"
+        for chiplet_type, stats in high_energy_types:
             analysis_message += f"- {chiplet_type.upper()}: {stats['avg_energy']:.3f} mJ avg ({stats['count']} chiplets)\n"
+        analysis_message += "\nNote: Focus on these high energy consumers only. Low energy consumers are not shown.\n"
         
         # self.messages.append({
         #     "role": "assistant",

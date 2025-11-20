@@ -8,3 +8,7 @@ env/
 *.log
 .env
 api/Evaluator/cascade/chiplet_model/dse/results/
+
+# macOS
+.DS_Store
+**/.DS_Store

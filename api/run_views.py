@@ -16,6 +16,10 @@ from .services.run_storage import RunStorageService
 from .services.result_export import ResultExportService
 import json
 from datetime import datetime
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -463,3 +467,29 @@ def cleanup_exports(request):
             'status': 'error',
             'message': f'Cleanup failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+
+@csrf_exempt
+def pause_run(request, run_id):
+    if request.method != "POST":
+        return JsonResponse({"status": "error", "message": "Only POST allowed"}, status=405)
+    try:
+        run = OptimizationRun.objects.get(run_id=run_id)
+        run.status = 'paused'
+        run.save()
+        # TODO: implement job signaling/halt for pause
+        return JsonResponse({"status": "paused", "run_id": run_id})
+    except OptimizationRun.DoesNotExist:
+        return JsonResponse({"status": "error", "message": "Run not found"}, status=404)
+
+@csrf_exempt
+def stop_run(request, run_id):
+    if request.method != "POST":
+        return JsonResponse({"status": "error", "message": "Only POST allowed"}, status=405)
+    try:
+        run = OptimizationRun.objects.get(run_id=run_id)
+        run.status = 'cancelled'
+        run.save()
+        # TODO: implement job signaling/halt for stop
+        return JsonResponse({"status": "cancelled", "run_id": run_id})
+    except OptimizationRun.DoesNotExist:
+        return JsonResponse({"status": "error", "message": "Run not found"}, status=404) 

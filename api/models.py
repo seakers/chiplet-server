@@ -8,6 +8,7 @@ class OptimizationRun(models.Model):
         ('GA', 'Genetic Algorithm'),
         ('NSGA2', 'NSGA-II'),
         ('MOEA', 'Multi-Objective Evolutionary Algorithm'),
+        ('FF', 'Full-Factorial'),
     ]
     
     MODEL_CHOICES = [
@@ -35,11 +36,12 @@ class OptimizationRun(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, default='running', choices=[
-        ('running', 'Running'),
-        ('completed', 'Completed'),
-        ('failed', 'Failed'),
-        ('cancelled', 'Cancelled'),
-    ])
+    ('running', 'Running'),
+    ('paused', 'Paused'),
+    ('completed', 'Completed'),
+    ('failed', 'Failed'),
+    ('cancelled', 'Cancelled'),
+])
     
     # Results summary
     total_designs_evaluated = models.IntegerField(default=0)
