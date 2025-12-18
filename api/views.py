@@ -25,6 +25,7 @@ import threading
 import traceback
 
 from api.Evaluator.gaCascade import runGACascade, runSingleCascade
+from api.Evaluator.gaPistil import runGAPistil
 from api.Evaluator.generator import generate_weighted_trace
 from api.Evaluator.evaluator import evaluate_custom_design
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
@@ -215,9 +216,13 @@ def compute_sum(request):
     
 @api_view(["GET"])
 def get_chart_data(request):
-    print("get_chart_data called")
     comparative = request.GET.get("comparative", "false").lower() == "true"
     requested_algorithm = request.GET.get("algorithm")
+    model = request.GET.get("model", "CASCADE")
+    
+    # Only print detailed logs for CASCADE to reduce noise when running Pistil
+    if model.upper() == "CASCADE":
+        print("[CASCADE] get_chart_data called")
     
     # Get file path for loaded runs
     file_path = request.GET.get("file_path")
@@ -246,22 +251,29 @@ def get_chart_data(request):
                 # Try partial match - but be more strict: match at start of run_id
                 # This prevents matching wrong runs when run_id is a substring
                 # WARNING: This fallback might match wrong run if run_id is partial
-                print(f"⚠️ Exact run_id match failed for '{run_id}', trying partial match...")
+                # Only print warnings for CASCADE (Pistil runs aren't in database)
+                if model.upper() == "CASCADE":
+                    print(f"⚠️ Exact run_id match failed for '{run_id}', trying partial match...")
                 run = OptimizationRun.objects.filter(run_id__istartswith=run_id).order_by('-created_at').first()
-                if run:
+                if run and model.upper() == "CASCADE":
                     print(f"⚠️ Partial match found run_id '{run.run_id}' (algorithm: '{run.get_algorithm_display()}') - verify this is correct!")
             if run:
                 determined_algorithm = run.get_algorithm_display()
-                print(f"✅ Determined algorithm from run_id {run_id}: {determined_algorithm} (database algorithm: '{run.algorithm}') (overriding requested_algorithm: {requested_algorithm})")
+                if model.upper() == "CASCADE":
+                    print(f"✅ Determined algorithm from run_id {run_id}: {determined_algorithm} (database algorithm: '{run.algorithm}') (overriding requested_algorithm: {requested_algorithm})")
                 # CRITICAL: Verify the algorithm is correct
                 if run.algorithm == 'GA' and determined_algorithm != 'Genetic Algorithm':
-                    print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{determined_algorithm}'. Forcing to 'Genetic Algorithm'")
+                    if model.upper() == "CASCADE":
+                        print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{determined_algorithm}'. Forcing to 'Genetic Algorithm'")
                     determined_algorithm = 'Genetic Algorithm'
                 elif run.algorithm == 'FF' and determined_algorithm != 'Full-Factorial':
-                    print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{determined_algorithm}'. Forcing to 'Full-Factorial'")
+                    if model.upper() == "CASCADE":
+                        print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{determined_algorithm}'. Forcing to 'Full-Factorial'")
                     determined_algorithm = 'Full-Factorial'
             else:
-                print(f"⚠️ No run found with run_id: {run_id}")
+                # Pistil runs aren't in database, so this is expected - only warn for CASCADE
+                if model.upper() == "CASCADE":
+                    print(f"⚠️ No run found with run_id: {run_id}")
         except Exception as e:
             print(f"❌ Error looking up algorithm from run_id: {e}")
             import traceback
@@ -273,20 +285,22 @@ def get_chart_data(request):
     
     # CRITICAL: Final safety check - ensure algorithm label is correct
     # If we have a run_id but couldn't determine algorithm, warn and use requested or default
-    if run_id and not determined_algorithm:
-        print(f"⚠️ WARNING: Could not determine algorithm from run_id {run_id}, using: {algorithm_to_use}")
+    # Only print warnings for CASCADE to reduce noise
+    if model.upper() == "CASCADE":
+        if run_id and not determined_algorithm:
+            print(f"⚠️ WARNING: Could not determine algorithm from run_id {run_id}, using: {algorithm_to_use}")
+        
+        # Additional validation: if requested_algorithm is 'Genetic Algorithm' but we got something else from DB, 
+        # trust the database unless there's a clear mismatch
+        if determined_algorithm and requested_algorithm:
+            if requested_algorithm == 'Genetic Algorithm' and determined_algorithm != 'Genetic Algorithm':
+                print(f"⚠️ WARNING: Requested 'Genetic Algorithm' but database says '{determined_algorithm}'. Using database value.")
+            elif requested_algorithm == 'Full-Factorial' and determined_algorithm != 'Full-Factorial':
+                print(f"⚠️ WARNING: Requested 'Full-Factorial' but database says '{determined_algorithm}'. Using database value.")
+        
+        print(f"[CASCADE] get_chart_data - requested_algorithm: {requested_algorithm}, determined_algorithm: {determined_algorithm}, run_id: {run_id}, FINAL using: {algorithm_to_use}")
     
-    # Additional validation: if requested_algorithm is 'Genetic Algorithm' but we got something else from DB, 
-    # trust the database unless there's a clear mismatch
-    if determined_algorithm and requested_algorithm:
-        if requested_algorithm == 'Genetic Algorithm' and determined_algorithm != 'Genetic Algorithm':
-            print(f"⚠️ WARNING: Requested 'Genetic Algorithm' but database says '{determined_algorithm}'. Using database value.")
-        elif requested_algorithm == 'Full-Factorial' and determined_algorithm != 'Full-Factorial':
-            print(f"⚠️ WARNING: Requested 'Full-Factorial' but database says '{determined_algorithm}'. Using database value.")
-    
-    print(f"get_chart_data - requested_algorithm: {requested_algorithm}, determined_algorithm: {determined_algorithm}, run_id: {run_id}, FINAL using: {algorithm_to_use}")
-    
-    if comparative:
+    if comparative and model.upper() == "CASCADE":
         # Comparative mode: read from runA_results/points.csv and runB_results/points.csv
         import os
         import csv
@@ -356,45 +370,237 @@ def get_chart_data(request):
         print(f"Comparative chart data: {len(points)} total points")
         return Response({"data": points})
     
-    # Simple mode: read from specified file path or default to points.csv
+    # Simple mode: either read points from file (CASCADE) or run Pistil GA and read its points
     try:
         import os
         import csv
-        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
-        
-        # Use provided file path or default to points.csv
-        if file_path:
-            points_csv_path = file_path
-            print(f"Reading from provided file path: {points_csv_path}")
-        else:
-            points_csv_path = os.path.join(WORKSPACE, 'dse/results/points.csv')
-            print(f"Reading from default points.csv: {points_csv_path}")
-        
-        if os.path.exists(points_csv_path):
-            points = []
-            with open(points_csv_path, mode='r') as file:
-                csv_reader = csv.reader(file)
-                for row in csv_reader:
-                    if len(row) >= 6:  # Ensure we have all required columns
-                        points.append({
-                            'x': float(row[0]),  # time
-                            'y': float(row[1]),  # energy
-                            'gpu': float(row[2]),
-                            'attn': float(row[3]),
-                            'sparse': float(row[4]),
-                            'conv': float(row[5]),
-                            'type': row[6] if len(row) > 6 else 'optimization',  # point type
-                            'algorithm': algorithm_to_use,
-                            'trace': 'gpt-j-65536-weighted'  # Default trace
+
+        # CASCADE path: preserve existing behavior
+        if model.upper() == "CASCADE":
+            WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+
+            # Use provided file path or default to points.csv
+            if file_path:
+                points_csv_path = file_path
+                print(f"[CASCADE] Reading from provided file path: {points_csv_path}")
+            else:
+                points_csv_path = os.path.join(WORKSPACE, 'dse/results/points.csv')
+                print(f"[CASCADE] Reading from default points.csv: {points_csv_path}")
+
+            if os.path.exists(points_csv_path):
+                points = []
+                with open(points_csv_path, mode='r') as file:
+                    csv_reader = csv.reader(file)
+                    for row in csv_reader:
+                        if len(row) >= 6:  # Ensure we have all required columns
+                            points.append({
+                                'x': float(row[0]),  # time
+                                'y': float(row[1]),  # energy
+                                'gpu': float(row[2]),
+                                'attn': float(row[3]),
+                                'sparse': float(row[4]),
+                                'conv': float(row[5]),
+                                'type': row[6] if len(row) > 6 else 'optimization',  # point type
+                                'algorithm': algorithm_to_use,
+                                'trace': 'gpt-j-65536-weighted'  # Default trace
+                            })
+                print(f"[CASCADE] Read {len(points)} points from {points_csv_path}")
+                return Response({"data": points})
+            else:
+                print(f"File not found: {points_csv_path}")
+                return Response({"data": []})
+
+        # PISTIL path: either read from file_path or run GA and read its points.csv
+        if model.upper() == "PISTIL":
+            # Check if file_path is provided (for loading previous runs or polling)
+            if file_path:
+                points_csv_path = file_path
+                print(f"Reading Pistil points from provided file path: {points_csv_path}")
+            else:
+                # Check if we should run GA or just read from a default location
+                # If run_id is provided and starts with "pistil_run_", use that directory
+                run_id_param = request.GET.get("run_id")
+                if run_id_param and run_id_param.startswith("pistil_run_"):
+                    from pathlib import Path as _Path
+                    pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                    output_dir = pistil_root / "dse" / "results" / run_id_param
+                    points_csv_path = os.path.join(str(output_dir), "points.csv")
+                    print(f"Reading Pistil points from run_id directory: {points_csv_path}")
+                else:
+                    # Only run GA if explicitly requested (not during polling)
+                    should_run_ga = request.GET.get("run_ga", "false").lower() == "true"
+                    if should_run_ga:
+                        print("Starting Pistil GA in background from get_chart_data")
+                        from datetime import datetime
+                        from pathlib import Path as _Path
+                        pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                        run_id = f"pistil_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                        output_dir = pistil_root / "dse" / "results" / run_id
+                        os.makedirs(output_dir, exist_ok=True)
+
+                        # Run GA in background thread (like Cascade) so points populate incrementally
+                        def run_pistil_ga():
+                            try:
+                                from api.Evaluator.gaPistil import runGAPistil
+                                pop_size = int(request.GET.get("population_size", 10))
+                                n_gen = int(request.GET.get("generations", 5))
+                                model_name = request.GET.get("pistil_model", "llama3-8b")
+                                
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD STARTED =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] Population: {pop_size}, Generations: {n_gen}, Model: {model_name}")
+                                print(f"[PISTIL GA] Output Directory: {output_dir}")
+                                print(f"[PISTIL GA] =========================================\n")
+                                
+                                runGAPistil(
+                                    pop_size=pop_size,
+                                    n_gen=n_gen,
+                                    model_name=model_name,
+                                    output_dir=str(output_dir),
+                                )
+                                
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD COMPLETED =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] All evaluations finished. Frontend can continue polling.")
+                                print(f"[PISTIL GA] =========================================\n")
+                            except Exception as e:
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD ERROR =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] Error: {e}")
+                                print(f"[PISTIL GA] =====================================\n")
+                                import traceback
+                                traceback.print_exc()
+
+                        # Start GA in background thread
+                        t = threading.Thread(target=run_pistil_ga, daemon=True)
+                        t.start()
+                        
+                        # Return immediately with run_id so frontend can poll
+                        points_csv_path = os.path.join(str(output_dir), "points.csv")
+                        return Response({
+                            "data": [],
+                            "pistil_run_id": run_id,
+                            "pistil_output_dir": str(output_dir),
+                            "message": "Pistil GA started in background, polling for results..."
                         })
-            print(f"Read {len(points)} points from {points_csv_path}")
-            return Response({"data": points})
-        else:
-            print(f"File not found: {points_csv_path}")
-            return Response({"data": []})
-        
+                    else:
+                        # During polling, try to find the most recent Pistil run
+                        from pathlib import Path as _Path
+                        pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                        results_dir = pistil_root / "dse" / "results"
+                        if results_dir.exists():
+                            # Find most recent pistil_run_* directory
+                            pistil_runs = [d for d in results_dir.iterdir() if d.is_dir() and d.name.startswith("pistil_run_")]
+                            if pistil_runs:
+                                latest_run = max(pistil_runs, key=os.path.getmtime)
+                                points_csv_path = os.path.join(str(latest_run), "points.csv")
+                                print(f"Polling: Using most recent Pistil run: {latest_run.name}")
+                            else:
+                                print("No Pistil runs found, returning empty data")
+                                return Response({"data": []})
+                        else:
+                            print("Pistil results directory not found")
+                            return Response({"data": []})
+            if os.path.exists(points_csv_path):
+                points = []
+                with open(points_csv_path, mode='r') as file:
+                    csv_reader = csv.reader(file)
+                    # Read header row
+                    header = next(csv_reader, None)
+                    if header is None:
+                        print(f"Pistil points.csv is empty at {points_csv_path}")
+                        return Response({"data": []})
+                    
+                    # Map column names to indices
+                    col_map = {col: idx for idx, col in enumerate(header)}
+                    
+                    # Required columns for plotting
+                    required_cols = ['latency_ms', 'energy_mJ']
+                    if not all(col in col_map for col in required_cols):
+                        print(f"Pistil points.csv missing required columns. Found: {header}")
+                        return Response({"data": []})
+                    
+                    for row in csv_reader:
+                        if len(row) < len(header):
+                            continue  # Skip incomplete rows
+                        
+                        try:
+                            # Extract core plotting data
+                            # For Pistil, default to latency_per_token and energy_per_inference
+                            # but also include latency_ms and energy_mJ for backward compatibility
+                            latency_ms = float(row[col_map['latency_ms']]) if 'latency_ms' in col_map else 0.0
+                            energy_mJ = float(row[col_map['energy_mJ']]) if 'energy_mJ' in col_map else 0.0
+                            latency_per_token = float(row[col_map['latency_per_token_ms']]) if 'latency_per_token_ms' in col_map else latency_ms
+                            energy_per_inference = float(row[col_map['energy_per_inference_mJ']]) if 'energy_per_inference_mJ' in col_map else energy_mJ
+                            
+                            point = {
+                                'x': latency_per_token,  # Default to latency_per_token for Pistil
+                                'y': energy_per_inference,  # Default to energy_per_inference for Pistil
+                                'latency_ms': latency_ms,  # Keep for backward compatibility
+                                'energy_mJ': energy_mJ,  # Keep for backward compatibility
+                                'type': 'optimization',
+                                'algorithm': algorithm_to_use,
+                                'trace': request.GET.get("trace", "pistil-default"),
+                                'model': 'PISTIL',
+                            }
+                            
+                            # Add decision variables (for filtering/highlighting)
+                            if 'num_cus' in col_map:
+                                point['num_cus'] = float(row[col_map['num_cus']])
+                            if 'num_tmacs' in col_map:
+                                point['num_tmacs'] = float(row[col_map['num_tmacs']])
+                            if 'mem_buf_cap' in col_map:
+                                point['mem_buf_cap'] = float(row[col_map['mem_buf_cap']])
+                            if 'net_buf_cap' in col_map:
+                                point['net_buf_cap'] = float(row[col_map['net_buf_cap']])
+                            if 'mem_banks_per_group' in col_map:
+                                point['mem_banks_per_group'] = float(row[col_map['mem_banks_per_group']])
+                            if 'mem_ranks' in col_map:
+                                point['mem_ranks'] = float(row[col_map['mem_ranks']])
+                            if 'mem_frac_bank_cap' in col_map:
+                                point['mem_frac_bank_cap'] = float(row[col_map['mem_frac_bank_cap']])
+                            if 'batch_size' in col_map:
+                                point['batch_size'] = float(row[col_map['batch_size']])
+                            if 'kv_cache' in col_map:
+                                point['kv_cache'] = float(row[col_map['kv_cache']])
+                            
+                            # Add key performance metrics (for tooltips/analysis)
+                            if 'latency_per_token_ms' in col_map:
+                                point['latency_per_token_ms'] = float(row[col_map['latency_per_token_ms']])
+                            if 'energy_per_inference_mJ' in col_map:
+                                point['energy_per_inference_mJ'] = float(row[col_map['energy_per_inference_mJ']])
+                            if 'energy_per_token_mJ' in col_map:
+                                point['energy_per_token_mJ'] = float(row[col_map['energy_per_token_mJ']])
+                            if 'average_power_W' in col_map:
+                                point['average_power_W'] = float(row[col_map['average_power_W']])
+                            if 'system_power_W' in col_map:
+                                point['system_power_W'] = float(row[col_map['system_power_W']])
+                            if 'system_cost' in col_map:
+                                point['system_cost'] = float(row[col_map['system_cost']])
+                            if 'avg_comp_util' in col_map:
+                                point['avg_comp_util'] = float(row[col_map['avg_comp_util']])
+                            if 'avg_mem_util' in col_map:
+                                point['avg_mem_util'] = float(row[col_map['avg_mem_util']])
+                            if 'prefill_tokens_per_sec' in col_map:
+                                point['prefill_tokens_per_sec'] = float(row[col_map['prefill_tokens_per_sec']])
+                            
+                            points.append(point)
+                        except (ValueError, IndexError) as e:
+                            print(f"Error parsing row in Pistil points.csv: {e}, row: {row}")
+                            continue
+                            
+                print(f"Read {len(points)} Pistil points from {points_csv_path}")
+                return Response({"data": points})
+            else:
+                print(f"Pistil points.csv not found at {points_csv_path}")
+                return Response({"data": []})
+
+        # Unknown model: fallback to empty data
+        print(f"Unknown model in get_chart_data: {model}")
+        return Response({"data": []})
+
     except Exception as e:
-        print(f"Error reading file: {e}")
+        print(f"Error in get_chart_data (model={model}): {e}")
         return Response({"data": []})
 
 @api_view(["GET"])

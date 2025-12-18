@@ -1,0 +1,97 @@
+{
+    "COMPUTE_CHIPLET": {
+        "CORES": 16,
+        "CORE_TO_CORE_BYTES_PER_CYCLE": 32,
+        "HEIGHT_MM": 7.0376006642915465,
+        "UCIE_BW_PER_MM": 256,
+        "UCIE_SHORELINE": 6.5376006642915465,
+        "WIDTH_MM": 3.75
+    },
+    "CORE": {
+        "CLK_FREQ": 2.0,
+        "C_MATRIX_THRESHOLD": 0.8,
+        "DISTANCE": {
+            "ACT_TO_HP": 0.03420138888888889,
+            "BUS_TO_TMAC_C": 0.1,
+            "CB_TO_TMAC_X1": 0.2,
+            "CB_TO_TMAC_X10": 0.9552083333333334,
+            "CB_TO_TMAC_X11": 1.073611111111111,
+            "CB_TO_TMAC_X12": 1.1236111111111111,
+            "CB_TO_TMAC_X13": 1.242013888888889,
+            "CB_TO_TMAC_X14": 1.292013888888889,
+            "CB_TO_TMAC_X2": 0.25,
+            "CB_TO_TMAC_X3": 0.4,
+            "CB_TO_TMAC_X4": 0.45,
+            "CB_TO_TMAC_X5": 0.5684027777777778,
+            "CB_TO_TMAC_X6": 0.6184027777777779,
+            "CB_TO_TMAC_X7": 0.7368055555555556,
+            "CB_TO_TMAC_X8": 0.7868055555555555,
+            "CB_TO_TMAC_X9": 0.9052083333333334,
+            "COMPUTE_BUS_HEIGHT": 0.1,
+            "CTRL_HEIGHT": 0.17,
+            "C_TO_C_REDUCTION_HEIGHT": 1.2085728865137684,
+            "GB_TO_CB": 1.1872222222222224,
+            "HP_HEIGHT": 0.025,
+            "MC_TO_SP": 1.1750694444444445,
+            "NB_TO_GB_AVG": 0.17680555555555555,
+            "SP_TO_DC": 0.9528472222222222,
+            "TMAC_BUFFER_HEIGHT": 0.043402777777777776,
+            "TMAC_HEIGHT": 0.1
+        },
+        "GLOBAL_BUFFER_B": 262144.0,
+        "HEIGHT_MM": 3.2688003321457733,
+        "HP_OPS_LATENCY": 4,
+        "HP_OPS_PER_CYCLE": 8,
+        "MEMORY_BUFFER_B": 2097152.0,
+        "NET_BUS_FREQ": 1.0,
+        "NET_BYTES_PER_CYCLE": 104.60161062866474,
+        "NET_LATENCY_CYCLES": 8,
+        "REDUCTION_BYTES_PER_CYCLE": 64,
+        "REDUCTION_LATENCY_CYCLES": 4,
+        "TMAC_BUFFER_B": 32768,
+        "TMAC_OPS_PER_CYCLE": 64,
+        "TMAC_PER_CORE": 14,
+        "TMAC_VECTOR_HEIGHT": 8,
+        "TMAC_VECTOR_WIDTH": 8,
+        "WIDTH_MM": 0.4,
+        "WIRES_PER_UM": 26
+    },
+    "COST": {
+        "COST_PER_GB_HBM": 10,
+        "N2_COST_PER_MM": 0.75,
+        "PCB_COST_PER_MM": 0.005,
+        "SUBSTRATE_COST_PER_MM": 0.05
+    },
+    "ENERGY": {
+        "GRS_PCB": 1.17,
+        "HP_VEC_OP": 1.5,
+        "PJ_PER_MM": 0.1,
+        "POWER_DELIVERY": 0.15,
+        "SD_PJ_P_B_SCALAR": 0.01,
+        "SRAM_R": 0.2,
+        "SRAM_W": 0.25,
+        "TMAC": 25.6,
+        "UCIE_S_PCB_L": 1.2,
+        "UCIE_S_PCB_S": 1.2,
+        "UCIE_S_SUB": 0.5
+    },
+    "MEMORY_CHIPLET": {
+        "BANK_GROUPS": 4,
+        "CH_PER_LAYER": 1,
+        "FRAC_BANK_CAP": 0.5,
+        "RANKS": 3
+    },
+    "NUM_CHIPLETS": 64,
+    "PKG": {
+        "COMPUTE_CHIPLETS": 4,
+        "HEIGHT_MM": 15.0,
+        "WIDTH_MM": 18.11568036536035
+    },
+    "RING_STATION": {
+        "HEIGHT_MM": 0.0,
+        "PKGS": 16,
+        "PKGS_PER_STRING": 0,
+        "STRINGS": 0,
+        "WIDTH_MM": 0.0
+    }
+}
