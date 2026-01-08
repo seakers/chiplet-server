@@ -8,6 +8,10 @@ env/
 *.log
 .env
 api/Evaluator/cascade/chiplet_model/dse/results/
+api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/
+api/Evaluator/sim-v2-4-pistil-sim-clean/configs/gen_configs/
+api/Evaluator/sim-v2-4-pistil-sim-clean/trace-results
+api/Evaluator/sim-v2-4-pistil-sim-clean/traces/
 
 # macOS
 .DS_Store

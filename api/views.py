@@ -219,10 +219,11 @@ def get_chart_data(request):
     comparative = request.GET.get("comparative", "false").lower() == "true"
     requested_algorithm = request.GET.get("algorithm")
     model = request.GET.get("model", "CASCADE")
+    # WORKSPACE = get_workspace(model)
     
     # Only print detailed logs for CASCADE to reduce noise when running Pistil
-    if model.upper() == "CASCADE":
-        print("[CASCADE] get_chart_data called")
+    # if model.upper() == "CASCADE":
+    #     print("[CASCADE] get_chart_data called")
     
     # Get file path for loaded runs
     file_path = request.GET.get("file_path")
@@ -616,6 +617,8 @@ def get_chat_response(request):
     """
     content = request.GET.get("content")
     role = request.GET.get("role")
+    evaluator = request.GET.get("evaluator", "cascade")
+    chat_bot.evaluator = evaluator
     
     # Check for report generation request
     if content and any(phrase in content.lower() for phrase in ["generate report", "download report", "get report", "create report", "export report"]):
@@ -896,6 +899,7 @@ def get_kernel_breakdown(request):
         sparse = request.GET.get("sparse", "0")
         conv = request.GET.get("conv", "0")
         output_format = request.GET.get("format", "json")  # 'json' or 'csv'
+        evaluator = request.GET.get("evaluator")
         
         if not run_id:
             return Response({"error": "run_id is required"}, status=400)
@@ -942,7 +946,7 @@ def get_kernel_breakdown(request):
         
         # Extract kernel breakdown using ChatBot model
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         breakdown = chat_bot.extract_kernel_breakdown(context_file_path=found_path, output_format=output_format)
         
         if breakdown is None:
@@ -1182,12 +1186,17 @@ def rule_mining(request):
     energy_max = request.GET.get("energyMax")
     time_min = request.GET.get("timeMin")
     time_max = request.GET.get("timeMax")
+    evaluator = request.GET.get("evaluator")
+    run_id = request.GET.get("run_id")
     
-    # Get file path for loaded runs
-    file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
-    
+    # # Get file path for loaded runs
+    # if evaluator.lower() == "cascade":
+    #     file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+    # elif evaluator.lower() == "pistil":
+    #     file_path = request.GET.get("file_path", "api/Evaluator/pistil/dse/results/points.csv")
+
     print(f"[rule_mining] Parameters: region={region}, pareto_ranks={pareto_start_rank}-{pareto_end_rank}")
-    print(f"[rule_mining] Using file: {file_path}")
+    # print(f"[rule_mining] Using file: {file_path}")
     if energy_min and energy_max:
         print(f"[rule_mining] Energy range: {energy_min}-{energy_max}")
     if time_min and time_max:
@@ -1203,9 +1212,10 @@ def rule_mining(request):
             "energy_max": float(energy_max) if energy_max else None,
             "time_min": float(time_min) if time_min else None,
             "time_max": float(time_max) if time_max else None,
-            "file_path": file_path  # Pass the file path to the ChatBot model
+            # "file_path": file_path  # Pass the file path to the ChatBot model
         }
         
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         rule_mining_str = chat_bot.rule_mining(point_selection_params)
         print("[rule_mining] Finished rule_mining() call.")
         
@@ -1229,58 +1239,73 @@ def rule_mining(request):
 @api_view(["GET"])
 def distance_correlation(request):
     """
-    Compute distance correlation between each chiplet type and Energy (y column) and Time (x column).
+    Compute distance correlation between each chiplet/design variable and objectives.
+    Accommodates both Cascade (4 variables) and Pistil (9 variables).
     """
+    print("Running Distance Correlation Views")
+    evaluator = request.GET.get("evaluator", "CASCADE")
+    run_id = request.GET.get("run_id", None)
     try:
-        # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
-        print(f"[distance_correlation] Using file: {file_path}")
+        if evaluator.lower() == 'pistil':
+            file_path = 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results' + run_id + '/points.csv'
+        elif evaluator.lower() == 'cascade':
+            file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+
+        print(f"[distance_correlation] Evaluator: {evaluator}, Using file: {file_path}")
         
-        # Load data from CSV
+        # 2. Load data from CSV dynamically
         import csv
-        xs, ys, gpus, attns, sparses, convs = [], [], [], [], [], []
+        import numpy as np
+        import dcor
+        
+        objective_0 = [] # Cascade: Time | Pistil: Latency
+        objective_1 = [] # Cascade: Energy | Pistil: Energy
+        design_vars_data = {col: [] for col in decision_cols}
+
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
             for row in csv_reader:
-                xs.append(float(row[0]))
-                ys.append(float(row[1]))
-                gpus.append(float(row[2]))
-                attns.append(float(row[3]))
-                sparses.append(float(row[4]))
-                convs.append(float(row[5]))
+                if not row: continue
+                # First two columns are always objectives
+                obj0_val = float(row[0])
+                obj1_val = float(row[1])
+                objective_0.append(obj0_val)
+                objective_1.append(obj1_val)
+                
+                # Remaining columns are design variables
+                for i, col_name in enumerate(decision_cols):
+                    # +2 offset because objectives occupy indices 0 and 1
+                    design_vars_data[col_name].append(float(row[i + 2]))
         
-        # Check if we have data
-        if len(xs) == 0:
-            return Response({"error": "No data available for distance correlation analysis"}, status=400)
+        if len(objective_0) == 0:
+            return Response({"error": "No data available for analysis"}, status=400)
         
-        # Compute distance correlation for each chiplet type vs Energy and vs Time
+        # 3. Safe Distance Correlation Helper
         def safe_dcor(x, y):
-            """Safely compute distance correlation, handling edge cases"""
             try:
+                # distance correlation requires 1D arrays for these vectors
                 result = float(dcor.distance_correlation(np.array(x), np.array(y)))
-                # Check for NaN or infinite values
-                if np.isnan(result) or np.isinf(result):
-                    return 0.0
-                return result
+                return 0.0 if np.isnan(result) or np.isinf(result) else result
             except Exception as e:
-                print(f"Error computing distance correlation: {e}")
                 return 0.0
+
+        # 4. Compute correlations for all detected variables
+        result = {}
+        obj0_label = "Time" if evaluator == "cascade" else "Latency"
+        obj1_label = "Energy"
+
+        for col_name in decision_cols:
+            # Objective 0 (Time/Latency)
+            result[f"{col_name}_vs_{obj0_label}"] = safe_dcor(design_vars_data[col_name], objective_0)
+            # Objective 1 (Energy)
+            result[f"{col_name}_vs_{obj1_label}"] = safe_dcor(design_vars_data[col_name], objective_1)
         
-        result = {
-            "GPU_vs_Energy": safe_dcor(gpus, ys),
-            "Attention_vs_Energy": safe_dcor(attns, ys),
-            "Sparse_vs_Energy": safe_dcor(sparses, ys),
-            "Convolution_vs_Energy": safe_dcor(convs, ys),
-            "GPU_vs_Time": safe_dcor(gpus, xs),
-            "Attention_vs_Time": safe_dcor(attns, xs),
-            "Sparse_vs_Time": safe_dcor(sparses, xs),
-            "Convolution_vs_Time": safe_dcor(convs, xs),
-        }
-        
-        print(f"[distance_correlation] Computed correlations: {result}")
+        print(f"[distance_correlation] Computed {len(result)} correlations")
         return Response(result)
+
     except Exception as e:
-        print(f"[distance_correlation] Exception: {e}")
+        import traceback
+        print(f"[distance_correlation] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
 
 @api_view(["GET"])
@@ -1291,12 +1316,13 @@ def distance_correlation_insights(request):
     """
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        evaluator = request.GET.get("evaluator")
+        run_id = request.GET.get("run_id", None)
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Get optimization context parameters
         objective = request.GET.get("objective", "both")  # "energy", "time", or "both"
         trace_name = request.GET.get("trace_name", "Unknown")
-        run_id = request.GET.get("run_id", None)
         
         # Get file path for loaded runs
         file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
@@ -1411,14 +1437,16 @@ def rule_mining_insights(request):
     Run rule mining, send the results to the LLM, and return a natural-language summary.
     Now supports goal-aware, design-specific insights with structured data.
     """
+    print("Running Rule Mining Insights Views")
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        evaluator = request.GET.get("evaluator")
+        run_id = request.GET.get("run_id", None)
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Get optimization context parameters
         objective = request.GET.get("objective", "both")  # "energy", "time", or "both"
         trace_name = request.GET.get("trace_name", "Unknown")
-        run_id = request.GET.get("run_id", None)
         
         # Get point selection parameters from request (same as rule_mining endpoint)
         region = request.GET.get("region", "pareto")
@@ -3990,8 +4018,9 @@ def get_previous_run_report(request):
         pareto_points = get_pareto_front(points)
         
         # Get rule mining results
+        evaluator = request.GET.get("evaluator")
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Use the backup file for rule mining
         point_selection_params = {
@@ -4253,7 +4282,9 @@ def data_mining_followup(request):
     """
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        evaluator = request.GET.get("evaluator")
+        run_id = request.GET.get("run_id")
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         data = json.loads(request.body)
         question = data.get("question")
@@ -4483,6 +4514,7 @@ def generate_comparative_report(request):
         print(f"Request GET params: {request.GET}")
         
         # Get run IDs from request parameters
+        evaluator = request.GET.get("evaluator")
         run_a_id = request.GET.get('run_a_id')
         run_b_id = request.GET.get('run_b_id')
         
@@ -4629,7 +4661,7 @@ def generate_comparative_report(request):
         
         # Get rule mining results for both runs
         print("Initializing ChatBot for rule mining...")
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator)
         
         def get_rule_mining_results(run_id):
             """Get rule mining results for a specific run"""
@@ -4646,6 +4678,7 @@ def generate_comparative_report(request):
             
             point_selection_params = {"file_path": file_path}
             try:
+                chat_bot.run_id = run_id
                 rule_mining_str = chat_bot.rule_mining(point_selection_params)
                 print(f"Rule mining completed for {run_id}")
                 
