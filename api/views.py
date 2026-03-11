@@ -618,7 +618,8 @@ def get_chat_response(request):
     content = request.GET.get("content")
     role = request.GET.get("role")
     evaluator = request.GET.get("evaluator", "cascade")
-    chat_bot.evaluator = evaluator
+    run_id = request.GET.get("run_id", None)
+    chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
     
     # Check for report generation request
     if content and any(phrase in content.lower() for phrase in ["generate report", "download report", "get report", "create report", "export report"]):
@@ -1221,13 +1222,13 @@ def rule_mining(request):
         
         # Parse the rule_mining_str into a list of dicts for the frontend
         rules = []
-        rule_pattern = re.compile(r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \[([0-9.eE+-]+)\]")
+        rule_pattern = re.compile(r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \(?([0-9.eE+-]+)\)?")
         for match in rule_pattern.finditer(rule_mining_str):
             rules.append({
-                "rule": match.group(1),
-                "conf_p_to_f": float(match.group(2)),
-                "conf_f_to_p": float(match.group(3)),
-                "lift": float(match.group(4)),
+            "rule": match.group(1),
+            "conf_f_to_p": float(match.group(2)),
+            "conf_p_to_f": float(match.group(3)),
+            "lift": float(match.group(4)),
             })
         elapsed = time.time() - start_time
         print(f"[rule_mining] Returning {len(rules)} rules. Time taken: {elapsed:.2f} seconds.")
@@ -1245,53 +1246,105 @@ def distance_correlation(request):
     print("Running Distance Correlation Views")
     evaluator = request.GET.get("evaluator", "CASCADE")
     run_id = request.GET.get("run_id", None)
+    
     try:
+        # Construct file path based on evaluator
         if evaluator.lower() == 'pistil':
-            file_path = 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results' + run_id + '/points.csv'
+            # CRITICAL FIX: Check if run_id exists before constructing path
+            if not run_id:
+                return Response({
+                    "error": "run_id is required for PISTIL distance correlation"
+                }, status=400)
+            
+            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv'
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return Response({
+                    "error": f"PISTIL points file not found for run {run_id}"
+                }, status=404)
+                
         elif evaluator.lower() == 'cascade':
             file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return Response({
+                    "error": "CASCADE points file not found"
+                }, status=404)
+        else:
+            return Response({
+                "error": f"Unknown evaluator: {evaluator}"
+            }, status=400)
 
         print(f"[distance_correlation] Evaluator: {evaluator}, Using file: {file_path}")
         
-        # 2. Load data from CSV dynamically
+        # Load data from CSV dynamically
         import csv
         import numpy as np
         import dcor
         
-        objective_0 = [] # Cascade: Time | Pistil: Latency
-        objective_1 = [] # Cascade: Energy | Pistil: Energy
+        # Read header to detect columns dynamically
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            
+            if not header:
+                return Response({
+                    "error": "CSV file is empty or has no header"
+                }, status=400)
+        
+        # Detect decision variable columns (exclude first 2 objective columns)
+        if evaluator.lower() == "cascade":
+            decision_cols = header[2:]  # Everything after objectives
+            print(f"[distance_correlation] Detected decision columns: {decision_cols}")
+        elif evaluator.lower() == "pistil":
+            decision_cols = header[:9]
+        
+        # Initialize data structures
+        objective_0 = []  # Cascade: Time | Pistil: Latency
+        objective_1 = []  # Cascade: Energy | Pistil: Energy
         design_vars_data = {col: [] for col in decision_cols}
 
+        # Read data
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
+            next(csv_reader)  # Skip header
+            
             for row in csv_reader:
-                if not row: continue
+                if not row or len(row) < 2:
+                    continue
+                    
                 # First two columns are always objectives
-                obj0_val = float(row[0])
-                obj1_val = float(row[1])
-                objective_0.append(obj0_val)
-                objective_1.append(obj1_val)
-                
-                # Remaining columns are design variables
-                for i, col_name in enumerate(decision_cols):
-                    # +2 offset because objectives occupy indices 0 and 1
-                    design_vars_data[col_name].append(float(row[i + 2]))
+                try:
+                    obj0_val = float(row[0])
+                    obj1_val = float(row[1])
+                    objective_0.append(obj0_val)
+                    objective_1.append(obj1_val)
+                    
+                    # Remaining columns are design variables
+                    for i, col_name in enumerate(decision_cols):
+                        if i + 2 < len(row):  # +2 offset for objectives
+                            design_vars_data[col_name].append(float(row[i + 2]))
+                except (ValueError, IndexError) as e:
+                    print(f"[distance_correlation] Warning: Skipping malformed row: {e}")
+                    continue
         
         if len(objective_0) == 0:
-            return Response({"error": "No data available for analysis"}, status=400)
+            return Response({"error": "No valid data available for analysis"}, status=400)
         
-        # 3. Safe Distance Correlation Helper
+        # Safe Distance Correlation Helper
         def safe_dcor(x, y):
             try:
-                # distance correlation requires 1D arrays for these vectors
                 result = float(dcor.distance_correlation(np.array(x), np.array(y)))
                 return 0.0 if np.isnan(result) or np.isinf(result) else result
             except Exception as e:
+                print(f"[distance_correlation] Error computing dcor: {e}")
                 return 0.0
 
-        # 4. Compute correlations for all detected variables
+        # Compute correlations for all detected variables
         result = {}
-        obj0_label = "Time" if evaluator == "cascade" else "Latency"
+        obj0_label = "Time" if evaluator.lower() == "cascade" else "Latency"
         obj1_label = "Energy"
 
         for col_name in decision_cols:
@@ -1307,16 +1360,21 @@ def distance_correlation(request):
         import traceback
         print(f"[distance_correlation] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
+    
 
 @api_view(["GET"])
 def distance_correlation_insights(request):
     """
     Compute distance correlation and send to LLM for meaningful insights analysis.
-    Now supports goal-aware, design-specific insights with structured data.
+    Now supports both CASCADE and PISTIL evaluators with goal-aware, design-specific insights.
     """
     try:
         from api.ChatBot.model import ChatBotModel
-        evaluator = request.GET.get("evaluator")
+        import csv
+        import numpy as np
+        import dcor
+        
+        evaluator = request.GET.get("evaluator", "CASCADE")
         run_id = request.GET.get("run_id", None)
         chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
@@ -1324,111 +1382,178 @@ def distance_correlation_insights(request):
         objective = request.GET.get("objective", "both")  # "energy", "time", or "both"
         trace_name = request.GET.get("trace_name", "Unknown")
         
-        # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+        # Construct file path based on evaluator
+        if evaluator.lower() == 'pistil':
+            if not run_id:
+                return Response({"error": "run_id is required for PISTIL"}, status=400)
+            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv'
+        else:  # CASCADE
+            file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
         
-        # Load data from CSV
-        import csv
-        xs, ys, gpus, attns, sparses, convs = [], [], [], [], [], []
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return Response({"error": f"Points file not found: {file_path}"}, status=404)
+        
+        # Read header to detect columns dynamically
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return Response({"error": "CSV file is empty or has no header"}, status=400)
+        
+        # Detect decision variable columns based on evaluator
+        if evaluator.lower() == "cascade":
+            decision_cols = header[2:]  # Everything after first 2 objective columns
+            obj0_label = "Time"
+            obj1_label = "Energy"
+        elif evaluator.lower() == "pistil":
+            decision_cols = header[:9]  # First 9 columns are decision variables
+            obj0_label = "Latency"
+            obj1_label = "Energy"
+        else:
+            return Response({"error": f"Unknown evaluator: {evaluator}"}, status=400)
+        
+        print(f"[distance_correlation_insights] Evaluator: {evaluator}, Decision cols: {decision_cols}")
+        
+        # Initialize data structures
+        objective_0 = []  # CASCADE: Time | PISTIL: Latency
+        objective_1 = []  # CASCADE: Energy | PISTIL: Energy
+        design_vars_data = {col: [] for col in decision_cols}
+        
+        # Read data
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
+            next(csv_reader)  # Skip header
             for row in csv_reader:
-                xs.append(float(row[0]))
-                ys.append(float(row[1]))
-                gpus.append(float(row[2]))
-                attns.append(float(row[3]))
-                sparses.append(float(row[4]))
-                convs.append(float(row[5]))
+                if not row or len(row) < 2:
+                    continue
+                try:
+                    if evaluator.lower() == "cascade":
+                        # CASCADE: objectives in first 2 columns
+                        obj0_val = float(row[0])
+                        obj1_val = float(row[1])
+                        objective_0.append(obj0_val)
+                        objective_1.append(obj1_val)
+                        # Design variables start at column 2
+                        for i, col_name in enumerate(decision_cols):
+                            if i + 2 < len(row):
+                                design_vars_data[col_name].append(float(row[i + 2]))
+                    else:  # PISTIL
+                        # PISTIL: objectives in last 2 columns
+                        obj0_val = float(row[-2])  # latency_ms
+                        obj1_val = float(row[-1])  # energy_mJ
+                        objective_0.append(obj0_val)
+                        objective_1.append(obj1_val)
+                        # Design variables in first 9 columns
+                        for i, col_name in enumerate(decision_cols):
+                            if i < len(row) - 2:  # Exclude last 2 objective columns
+                                design_vars_data[col_name].append(float(row[i]))
+                except (ValueError, IndexError) as e:
+                    print(f"[distance_correlation_insights] Warning: Skipping malformed row: {e}")
+                    continue
         
-        # Compute distance correlation safely (avoid NaN/Inf in JSON)
-        def safe_dcor(a, b):
+        if len(objective_0) == 0:
+            return Response({"error": "No valid data available for analysis"}, status=400)
+        
+        # Safe Distance Correlation Helper
+        def safe_dcor(x, y):
             try:
-                val = float(dcor.distance_correlation(np.array(a), np.array(b)))
-                if np.isnan(val) or np.isinf(val):
-                    return None
-                return val
-            except Exception:
+                result = float(dcor.distance_correlation(np.array(x), np.array(y)))
+                return None if (np.isnan(result) or np.isinf(result)) else result
+            except Exception as e:
+                print(f"[distance_correlation_insights] Error computing dcor: {e}")
                 return None
-
-        correlations = {
-            "GPU_vs_Energy": safe_dcor(gpus, ys),
-            "Attention_vs_Energy": safe_dcor(attns, ys),
-            "Sparse_vs_Energy": safe_dcor(sparses, ys),
-            "Convolution_vs_Energy": safe_dcor(convs, ys),
-            "GPU_vs_Time": safe_dcor(gpus, xs),
-            "Attention_vs_Time": safe_dcor(attns, xs),
-            "Sparse_vs_Time": safe_dcor(sparses, xs),
-            "Convolution_vs_Time": safe_dcor(convs, xs),
-        }
+        
+        # Compute correlations for all detected variables
+        correlations = {}
+        for col_name in decision_cols:
+            # Objective 0 (Time/Latency)
+            correlations[f"{col_name}_vs_{obj0_label}"] = safe_dcor(design_vars_data[col_name], objective_0)
+            # Objective 1 (Energy)
+            correlations[f"{col_name}_vs_{obj1_label}"] = safe_dcor(design_vars_data[col_name], objective_1)
         
         # Create structured JSON data for UI display
-        energy_correlations = {k: v for k, v in correlations.items() if 'Energy' in k}
-        time_correlations = {k: v for k, v in correlations.items() if 'Time' in k}
+        energy_correlations = {k: v for k, v in correlations.items() if obj1_label in k}
+        time_correlations = {k: v for k, v in correlations.items() if obj0_label in k}
         
-        # Sort by correlation value (descending)
-        # Sort, treating None as -inf so they sink to bottom
-        energy_sorted = sorted(energy_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
-        time_sorted = sorted(time_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
+        # Sort by correlation value (descending), treating None as -inf
+        energy_sorted = sorted(energy_correlations.items(), 
+                              key=lambda x: (-np.inf if x[1] is None else x[1]), 
+                              reverse=True)
+        time_sorted = sorted(time_correlations.items(), 
+                            key=lambda x: (-np.inf if x[1] is None else x[1]), 
+                            reverse=True)
         
         # Create structured JSON data
         structured_data = {
             "high_impact_on_energy": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
-                for chiplet_metric, value in energy_sorted
+                {"variable": var_metric.split('_vs_')[0], "correlation": (round(value, 3) if value is not None else None)}
+                for var_metric, value in energy_sorted
             ],
             "high_impact_on_time": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
-                for chiplet_metric, value in time_sorted
+                {"variable": var_metric.split('_vs_')[0], "correlation": (round(value, 3) if value is not None else None)}
+                for var_metric, value in time_sorted
             ],
             "trace_name": trace_name,
             "objective": objective,
+            "evaluator": evaluator,
             "run_id": run_id
         }
         
         # Create a formatted string for the AI
         correlation_data = "Distance Correlation Analysis Results:\n\n"
-        correlation_data += "Energy Impact (Distance Correlation Values):\n"
-        for chiplet_metric, value in energy_sorted:
-            chiplet = chiplet_metric.split('_vs_')[0]
+        correlation_data += f"{obj1_label} Impact (Distance Correlation Values):\n"
+        for var_metric, value in energy_sorted:
+            variable = var_metric.split('_vs_')[0]
             val_str = f"{value:.3f}" if value is not None else "N/A"
-            correlation_data += f"• {chiplet}: {val_str}\n"
+            correlation_data += f"• {variable}: {val_str}\n"
         
-        correlation_data += "\nTime Impact (Distance Correlation Values):\n"
-        for chiplet_metric, value in time_sorted:
-            chiplet = chiplet_metric.split('_vs_')[0]
+        correlation_data += f"\n{obj0_label} Impact (Distance Correlation Values):\n"
+        for var_metric, value in time_sorted:
+            variable = var_metric.split('_vs_')[0]
             val_str = f"{value:.3f}" if value is not None else "N/A"
-            correlation_data += f"• {chiplet}: {val_str}\n"
+            correlation_data += f"• {variable}: {val_str}\n"
         
         # Create goal-aware prompt
         if objective == "energy":
             goal_text = "minimize energy consumption"
             focus_metric = "energy"
         elif objective == "time":
-            goal_text = "minimize execution time"
-            focus_metric = "execution time"
+            goal_text = f"minimize {obj0_label.lower()}"
+            focus_metric = obj0_label.lower()
         else:
-            goal_text = "optimize both energy and execution time"
+            goal_text = f"optimize both energy and {obj0_label.lower()}"
             focus_metric = "both metrics"
         
+        # Adjust terminology based on evaluator
+        if evaluator.lower() == "cascade":
+            design_element = "chiplet types"
+        else:  # PISTIL
+            design_element = "design parameters"
+        
         prompt = (
-            f"You are an expert in chiplet design. The current design goal is to {goal_text}.\n\n"
+            f"You are an expert in hardware design using the {evaluator} evaluator. "
+            f"The current design goal is to {goal_text}.\n\n"
             f"Trace used: {trace_name}\n\n"
-            f"Here are distance correlation results showing the relationship between chiplet types and performance metrics. "
+            f"Here are distance correlation results showing the relationship between {design_element} and performance metrics. "
             f"Distance correlation ranges from 0 (no relationship) to 1 (perfect relationship).\n\n"
             f"JSON Data:\n{json.dumps(structured_data, indent=2)}\n\n"
             f"Provide a concise, actionable summary (2-3 sentences) covering:\n"
-            f"1. Which chiplet types have the strongest impact on {focus_metric} and why\n"
+            f"1. Which {design_element} have the strongest impact on {focus_metric} and why\n"
             f"2. One practical design recommendation for improving performance\n"
             f"3. Any surprising findings (if any)\n\n"
             f"Keep your response focused and to the point. Users can ask follow-up questions for more details."
         )
         
         response = chat_bot.get_response(prompt, role="user")
+        
         return Response({
             "insights": response,
             "structured_data": structured_data
         })
     except Exception as e:
+        import traceback
+        print(f"[distance_correlation_insights] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
 
 @api_view(["GET"])
@@ -1458,7 +1583,7 @@ def rule_mining_insights(request):
         time_max = request.GET.get("timeMax")
         
         # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+        # file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
         
         # Create point selection parameters for ChatBot model
         point_selection_params = {
@@ -1469,7 +1594,7 @@ def rule_mining_insights(request):
             "energy_max": float(energy_max) if energy_max else None,
             "time_min": float(time_min) if time_min else None,
             "time_max": float(time_max) if time_max else None,
-            "file_path": file_path  # Add file path for loaded runs
+            # "file_path": file_path  # Add file path for loaded runs
         }
         
         rule_mining_str = chat_bot.rule_mining(point_selection_params)
@@ -2380,12 +2505,275 @@ Just ask me to compare any aspect of the two runs!"""
                             })
                     except Exception as e:
                         return JsonResponse({"status": "error", "message": str(e)}, status=500)
-                else:
-                    # NOT Full-Factorial - continue to GA path
-                    print(f"✅ GA RUN: Algorithm is '{algorithm_raw}' (not Full-Factorial) - proceeding to GA path")
-                
-                # GA path (only reached if not Full-Factorial)
-                if algorithm_raw != 'Full-Factorial':
+
+                # Deep RL path
+                elif algorithm_raw == 'Deep RL':
+                    try:
+                        print(f"✅ DEEP RL RUN: Confirmed algorithm='Deep RL' - proceeding with Deep RL optimization")
+                        import os
+                        import time
+                        
+                        # Parse parameters
+                        model = data.get('model', 'CASCADE')
+                        objectives = data.get('objectives', [])
+                        traces = data.get('traces', [])
+                        episodes = int(data.get('episodes', 100))
+                        mini_batch_size = int(data.get('mini_batch_size', 32))
+                        pistil_model = data.get('pistil_model', 'llama3-8b')  # For PISTIL model
+                        
+                        # Validate parameters
+                        if episodes < 1:
+                            return JsonResponse({"status": "error", "message": f"episodes must be at least 1, got {episodes}"}, status=400)
+                        if mini_batch_size < 1:
+                            return JsonResponse({"status": "error", "message": f"mini_batch_size must be at least 1, got {mini_batch_size}"}, status=400)
+                        if not traces:
+                            return JsonResponse({"status": "error", "message": "At least one trace is required"}, status=400)
+                        
+                        # Determine trace name
+                        if isinstance(traces, list) and len(traces) == 1:
+                            trace_name = traces[0].get('name', traces[0]) if isinstance(traces[0], dict) else traces[0]
+                        else:
+                            trace_names = [t.get('name', t) if isinstance(t, dict) else t for t in traces]
+                            weights = [t.get('weight', 1.0) if isinstance(t, dict) else 1.0 for t in traces]
+                            trace_name = generate_weighted_trace(trace_names, weights, label='deepRL')
+                        
+                        # Generate unique run ID based on model type
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        
+                        if model.upper() == 'PISTIL':
+                            # PISTIL: Use pistil-specific run_id and directory structure
+                            run_id = f"pistil_run_{timestamp}"
+                            from pathlib import Path as _Path
+                            pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                            output_dir = pistil_root / "dse" / "results" / run_id
+                            os.makedirs(output_dir, exist_ok=True)
+                            points_csv_path = os.path.join(str(output_dir), "points.csv")
+                            
+                            # Write PISTIL CSV header
+                            pistil_header = "num_cus,num_tmacs,mem_buf_cap,net_buf_cap,mem_banks_per_group,mem_ranks,mem_frac_bank_cap,batch_size,kv_cache,latency_per_token_ms,energy_per_inference_mJ,energy_per_token_mJ,average_power_W,system_power_W,system_cost,avg_comp_util,avg_mem_util,prefill_tokens_per_sec,latency_ms,energy_mJ"
+                            with open(points_csv_path, 'w') as f:
+                                f.write(pistil_header + "\n")
+                            
+                            print(f"✅ DEEP RL RUN (PISTIL): Created output directory: {output_dir}")
+                        else:
+                            # CASCADE: Use cascade-specific directory structure
+                            run_id = f"deep_rl_run_{timestamp}"
+                            WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+                            RESULTS_DIR = os.path.join(WORKSPACE, 'dse/results')
+                            output_dir = RESULTS_DIR
+                            points_csv_path = os.path.join(RESULTS_DIR, "points.csv")
+                            
+                            # Clear CASCADE points.csv (no header needed)
+                            with open(points_csv_path, 'w') as f:
+                                f.write("")
+                            
+                            print(f"✅ DEEP RL RUN (CASCADE): Using output directory: {output_dir}")
+                        
+                        # Create run directory for database storage
+                        run_dir = create_run_directory(run_id)
+                        
+                        # Create run in storage
+                        print(f"✅ DEEP RL RUN: Creating database record with algorithm='DRL'")
+                        run_name = f"Deep RL Run ({model})"
+                        optimization_run = RunStorageService.create_optimization_run(
+                            algorithm='DRL',  # Database code for Deep RL
+                            model=model,
+                            population_size=0,  # Not applicable for Deep RL
+                            generations=0,  # Not applicable for Deep RL
+                            objectives=objectives,
+                            trace_name=trace_name,
+                            trace_sets={'main': traces},
+                            name=run_name,
+                            description=f"Deep RL episodes={episodes}, mini_batch_size={mini_batch_size}, model={model}"
+                        )
+                        print(f"✅ DEEP RL RUN: Created run {optimization_run.run_id}")
+                        
+                        def run_deep_rl_job():
+                            """Background job to run Deep RL optimization"""
+                            execution_time_seconds = None
+                            try:
+                                start_time = time.time()
+                                design_points = []
+                                
+                                print(f"✅ DEEP RL RUN: Starting Deep RL with {episodes} episodes, mini_batch_size={mini_batch_size}")
+                                print(f"✅ DEEP RL RUN: Model: {model}, Trace: {trace_name}")
+                                
+                                # TODO: Replace this with actual Deep RL implementation
+                                # For now, this is a placeholder that demonstrates the structure
+                                
+                                import random
+                                
+                                for episode in range(episodes):
+                                    if model.upper() == 'PISTIL':
+                                        # PISTIL: Generate Pistil-specific design parameters
+                                        # These are the 9 decision variables for PISTIL
+                                        num_cus = random.randint(1, 16)
+                                        num_tmacs = random.randint(1, 8)
+                                        mem_buf_cap = random.choice([64, 128, 256, 512])
+                                        net_buf_cap = random.choice([32, 64, 128])
+                                        mem_banks_per_group = random.choice([2, 4, 8])
+                                        mem_ranks = random.choice([1, 2, 4])
+                                        mem_frac_bank_cap = random.uniform(0.5, 1.0)
+                                        batch_size = random.choice([1, 2, 4, 8])
+                                        kv_cache = random.choice([0, 1])
+                                        
+                                        # TODO: Replace with actual PISTIL evaluator call
+                                        # from api.Evaluator.gaPistil import runSinglePistil
+                                        # results = runSinglePistil(...)
+                                        
+                                        # Placeholder evaluation values
+                                        latency_per_token = random.uniform(5, 50)
+                                        energy_per_inference = random.uniform(100, 1000)
+                                        energy_per_token = random.uniform(1, 10)
+                                        average_power = random.uniform(50, 200)
+                                        system_power = random.uniform(100, 500)
+                                        system_cost = random.uniform(1000, 10000)
+                                        avg_comp_util = random.uniform(0.3, 0.95)
+                                        avg_mem_util = random.uniform(0.3, 0.95)
+                                        prefill_tokens_per_sec = random.uniform(100, 1000)
+                                        latency_ms = latency_per_token * 100  # Example calculation
+                                        energy_mJ = energy_per_inference
+                                        
+                                        # Write to PISTIL CSV format (with all columns)
+                                        row = f"{num_cus},{num_tmacs},{mem_buf_cap},{net_buf_cap},{mem_banks_per_group},{mem_ranks},{mem_frac_bank_cap:.4f},{batch_size},{kv_cache},{latency_per_token:.4f},{energy_per_inference:.4f},{energy_per_token:.4f},{average_power:.4f},{system_power:.4f},{system_cost:.4f},{avg_comp_util:.4f},{avg_mem_util:.4f},{prefill_tokens_per_sec:.4f},{latency_ms:.4f},{energy_mJ:.4f}"
+                                        
+                                        with open(points_csv_path, 'a') as f:
+                                            f.write(row + "\n")
+                                        
+                                        dp = {
+                                            'execution_time_ms': latency_ms,
+                                            'energy_mj': energy_mJ,
+                                            'chiplets': {
+                                                'num_cus': num_cus,
+                                                'num_tmacs': num_tmacs,
+                                                'mem_buf_cap': mem_buf_cap,
+                                                'net_buf_cap': net_buf_cap,
+                                            },
+                                            'additional_metrics': {'episode': episode},
+                                            'context_file_path': ''
+                                        }
+                                        
+                                    else:
+                                        # CASCADE: Generate chiplet configuration
+                                        gpu = random.randint(0, 8)
+                                        attn = random.randint(0, 8)
+                                        sparse = random.randint(0, 8)
+                                        conv = 12 - gpu - attn - sparse
+                                        if conv < 0:
+                                            conv = 0
+                                            total = gpu + attn + sparse
+                                            if total > 12:
+                                                gpu = min(gpu, 12 - attn - sparse)
+                                        
+                                        # TODO: Replace with actual CASCADE evaluator call
+                                        # from api.Evaluator.gaCascade import runSingleCascade
+                                        # exec_ms, energy_mj = runSingleCascade(
+                                        #     chiplets={"GPU": gpu, "Attention": attn, "Sparse": sparse, "Convolution": conv},
+                                        #     trace=trace_name,
+                                        #     save_to_csv=False  # We'll write manually
+                                        # )
+                                        
+                                        # Placeholder values for testing
+                                        exec_ms = random.uniform(10, 100)
+                                        energy_mj = random.uniform(50, 500)
+                                        
+                                        # Write to CASCADE CSV format (no header)
+                                        with open(points_csv_path, 'a') as f:
+                                            f.write(f"{exec_ms},{energy_mj},{gpu},{attn},{sparse},{conv}\n")
+                                        
+                                        dp = {
+                                            'execution_time_ms': exec_ms,
+                                            'energy_mj': energy_mj,
+                                            'chiplets': {
+                                                'GPU': gpu,
+                                                'Attention': attn,
+                                                'Sparse': sparse,
+                                                'Convolution': conv
+                                            },
+                                            'additional_metrics': {'episode': episode},
+                                            'context_file_path': ''
+                                        }
+                                    
+                                    design_points.append(dp)
+                                    
+                                    # Log progress periodically
+                                    if (episode + 1) % 10 == 0:
+                                        print(f"✅ DEEP RL RUN ({model}): Completed episode {episode + 1}/{episodes}")
+                                
+                                # Calculate execution time
+                                execution_time_seconds = time.time() - start_time
+                                print(f"✅ DEEP RL RUN ({model}): Completed {len(design_points)} episodes in {execution_time_seconds:.2f} seconds")
+                                
+                                # Store design points in database
+                                if design_points:
+                                    print(f"✅ DEEP RL RUN: Storing {len(design_points)} design points to database")
+                                    RunStorageService.store_design_points(
+                                        optimization_run,
+                                        design_points,
+                                        run_dir
+                                    )
+                                    print(f"✅ DEEP RL RUN: Design points stored successfully")
+                                
+                            except Exception as e:
+                                print(f"❌ DEEP RL RUN: Error during execution: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                raise
+                            finally:
+                                # Mark run as completed
+                                try:
+                                    analytics_results = {'rule_mining': '', 'distance_correlation': ''}
+                                    print(f"✅ DEEP RL RUN: Completing run {optimization_run.run_id}")
+                                    completed_run = RunStorageService.complete_run(
+                                        optimization_run,
+                                        execution_time_seconds=execution_time_seconds,
+                                        analytics_results=analytics_results
+                                    )
+                                    print(f"✅ DEEP RL RUN: Run {completed_run.run_id} marked as completed")
+                                except Exception as e:
+                                    print(f"❌ DEEP RL RUN: Error completing run: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        
+                        # Start background thread and return immediately
+                        t = threading.Thread(target=run_deep_rl_job, daemon=True)
+                        t.start()
+                        
+                        # Return response with appropriate run_id format
+                        response_data = {
+                            'status': 'started',
+                            'data': [],
+                            'plot_data': [],
+                            'run_id': optimization_run.run_id,
+                            'run_directory': run_id,
+                            'deep_rl_run_id': run_id,
+                            'model': model,
+                            'metadata': {
+                                'model': model,
+                                'algorithm': 'Deep RL',
+                                'objectives': objectives,
+                                'episodes': episodes,
+                                'mini_batch_size': mini_batch_size,
+                                'trace': trace_name,
+                                'pistil_model': pistil_model if model.upper() == 'PISTIL' else None
+                            }
+                        }
+                        
+                        # For PISTIL, also include pistil_run_id so frontend polling works correctly
+                        if model.upper() == 'PISTIL':
+                            response_data['pistil_run_id'] = run_id
+                        
+                        return JsonResponse(response_data)
+                        
+                    except Exception as e:
+                        print(f"❌ DEEP RL RUN: Error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return JsonResponse({"status": "error", "message": str(e)}, status=500)
+
+                # GA path (only reached if not Full-Factorial and not Deep RL)
+                if algorithm_raw != 'Full-Factorial' and algorithm_raw != 'Deep RL':
                     print("✅ GA RUN: Processing as REGULAR (Genetic Algorithm) optimization")
                     # Regular (non-comparative) optimization - THIS IS ALWAYS GA
                     try:
@@ -3572,13 +3960,16 @@ def list_backup_files(request):
         from datetime import datetime
         from .models import OptimizationRun
         
-        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
-        results_dir = os.path.join(WORKSPACE, 'dse/results')
+        WORKSPACE_CASCADE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+        WORKSPACE_PISTIL = sys.path[0] + '/api/Evaluator/sim-v2-4-pistil-sim-clean'
+        results_dir_cascade = os.path.join(WORKSPACE_CASCADE, 'dse/results')
+        results_dir_pistil = os.path.join(WORKSPACE_PISTIL, 'dse/results')
         
-        file_list = []
+        files_cascade = []
+        files_pistil = []
         
         # 1. Find all CSV backup files
-        backup_pattern = os.path.join(results_dir, "points_backup_*.csv")
+        backup_pattern = os.path.join(results_dir_cascade, "points_backup_*.csv")
         backup_files = glob.glob(backup_pattern)
         
         for file_path in backup_files:
@@ -3593,48 +3984,78 @@ def list_backup_files(request):
                     'timestamp': timestamp.isoformat(),
                     'display_name': f"Run {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
                     'file_path': file_path,
-                    'source': 'backup_file'
+                    'source': 'backup_file',
+                    'evaluator': 'cascade'
                 }
-                file_list.append(file_info)
+                files_cascade.append(file_info)
             except ValueError:
                 # Skip files with invalid timestamps
                 continue
+        # 2. Find all CSV backup files in Pistil workspace (if any)
+
+        backup_pattern_pistil = os.path.join(results_dir_pistil, "pistil_run_*")
+        backup_dirs_pistil = glob.glob(backup_pattern_pistil)
+
+        for dir_path in backup_dirs_pistil:
+            if os.path.isdir(dir_path):
+                points_file = os.path.join(dir_path, "points.csv")
+                if os.path.exists(points_file):
+                    # Extract folder name which contains timestamp
+                    folder_name = os.path.basename(dir_path)
+                    timestamp_str = folder_name.replace("pistil_run_", "")
+                    
+                    try:
+                        # Parse timestamp
+                        timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                        file_info = {
+                            'filename': folder_name,
+                            'timestamp': timestamp.isoformat(),
+                            'display_name': f"Run {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+                            'file_path': points_file,
+                            'source': 'backup_file',
+                            'evaluator': 'pistil'
+                        }
+                        files_pistil.append(file_info)
+                    except ValueError:
+                        # Skip folders with invalid timestamps
+                        continue
+
+        # # 3. Get all completed optimization runs from database
+        # completed_runs = OptimizationRun.objects.filter(status='completed').order_by('-created_at')
         
-        # 2. Get all completed optimization runs from database
-        completed_runs = OptimizationRun.objects.filter(status='completed').order_by('-created_at')
-        
-        for run in completed_runs:
-            try:
-                # Use run_id as the identifier, create display name from run name or timestamp
-                # Consistent format: "Custom Name (Algorithm)" or "Run YYYY-MM-DD HH:MM:SS (Algorithm)"
-                algorithm_display = run.get_algorithm_display()
-                if run.name:
-                    # Custom name: "My Custom Run (Genetic Algorithm)"
-                    display_name = f"{run.name} ({algorithm_display})"
-                else:
-                    # No custom name: "Run 2025-01-15 14:30:00 (Genetic Algorithm)"
-                    display_name = f"Run {run.created_at.strftime('%Y-%m-%d %H:%M:%S')} ({algorithm_display})"
+        # for run in completed_runs:
+        #     try:
+        #         # Use run_id as the identifier, create display name from run name or timestamp
+        #         # Consistent format: "Custom Name (Algorithm)" or "Run YYYY-MM-DD HH:MM:SS (Algorithm)"
+        #         algorithm_display = run.get_algorithm_display()
+        #         if run.name:
+        #             # Custom name: "My Custom Run (Genetic Algorithm)"
+        #             display_name = f"{run.name} ({algorithm_display})"
+        #         else:
+        #             # No custom name: "Run 2025-01-15 14:30:00 (Genetic Algorithm)"
+        #             display_name = f"Run {run.created_at.strftime('%Y-%m-%d %H:%M:%S')} ({algorithm_display})"
                 
-                # For database runs, we'll use the run_id as the "filename" identifier
-                file_info = {
-                    'filename': run.run_id,  # Use run_id as identifier
-                    'timestamp': run.created_at.isoformat(),
-                    'display_name': display_name,
-                    'file_path': '',  # No file path for database runs
-                    'source': 'database',
-                    'run_id': run.run_id,
-                    'algorithm': algorithm_display,
-                    'total_designs': run.total_designs_evaluated
-                }
-                file_list.append(file_info)
-            except Exception as e:
-                print(f"Error processing database run {run.run_id}: {e}")
-                continue
+        #         # For database runs, we'll use the run_id as the "filename" identifier
+        #         file_info = {
+        #             'filename': run.run_id,  # Use run_id as identifier
+        #             'timestamp': run.created_at.isoformat(),
+        #             'display_name': display_name,
+        #             'file_path': '',  # No file path for database runs
+        #             'source': 'database',
+        #             'run_id': run.run_id,
+        #             'algorithm': algorithm_display,
+        #             'total_designs': run.total_designs_evaluated
+        #         }
+        #         file_list.append(file_info)
+        #     except Exception as e:
+        #         print(f"Error processing database run {run.run_id}: {e}")
+        #         continue
         
         # Sort by timestamp (newest first)
+        file_list = files_cascade + files_pistil
         file_list.sort(key=lambda x: x['timestamp'], reverse=True)
         
-        print(f"✅ list_backup_files: Returning {len(file_list)} runs ({len(backup_files)} backup files + {completed_runs.count()} database runs)")
+        print(f"✅ list_backup_files: Returning {len(file_list)} runs ({len(files_cascade)} cascade backup files + {len(files_pistil)} pistil backup files)")
         
         return JsonResponse({
             'status': 'success',

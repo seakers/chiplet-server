@@ -666,7 +666,7 @@ class ChatBotModel():
         
         elif self.evaluator.lower() == 'pistil':
             print("b")
-            file_path = 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results' + self.run_id + '/points.csv'
+            file_path = 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/' + self.run_id + '/points.csv'
             # Columns in the CSV file
             decision_cols = [
                 "num_cus", "num_tmacs", "mem_buf_cap", "net_buf_cap",
@@ -706,6 +706,8 @@ class ChatBotModel():
                 point_vals = []
                 design_vals = []
                 for row in csv_reader:
+                    if row[0] == "num_cus":  # skip header
+                        continue
                     design_val = [float(row[i]) for i in range(len(decision_cols))]
                     point_val = [float(row[len(decision_cols) + i]) for i in range(2)]  # assuming first two metrics are objectives
                     point_vals.append(point_val)
@@ -769,6 +771,8 @@ class ChatBotModel():
                 csv_reader = csv.reader(f)
                 for row in csv_reader:
                     if not row: continue
+                    if eval_type == "pistil" and row[0] == "num_cus":
+                        continue # skip the first row for pistil
                     # Convert all values to float, then appropriate ints for design vars
                     numeric_row = [float(val) for val in row]
                     full_data_list.append(numeric_row)
@@ -777,6 +781,8 @@ class ChatBotModel():
 
         if not full_data_list:
             return "No data available for rule mining analysis."
+
+        # print("Data Loaded!")
 
         # Convert to numpy and unique rows
         full_data = np.array(full_data_list)
@@ -813,8 +819,9 @@ class ChatBotModel():
             # (Ensure index references for energy/time use 0 and 1)
             point_selection = full_data[full_data[:, -1] < 3] # Placeholder for brevity
 
+        # print(f"Selected {len(point_selection)} points for rule mining.")
         # 5. Rule Definition and Binning
-        feature_list = ["none", "low", "medium", "high", "very high"]
+        feature_list = ["none", "low", "medium", "high"]
         rules_dict = {}
         
         for chip_ind, col_name in enumerate(decision_cols):
@@ -832,8 +839,9 @@ class ChatBotModel():
                     rule_points = full_data[(full_data[:, col_idx] > val_max * 0.33) & (full_data[:, col_idx] <= val_max * 0.66)]
                 elif feature == "high":
                     rule_points = full_data[full_data[:, col_idx] > val_max * 0.66]
-                
                 rules_dict[f"{col_name}_{feature}"] = rule_points
+
+        # print("Rules Defined!")
 
         # 6. Rule Mining Execution
         pfront_rules = []
@@ -844,6 +852,8 @@ class ChatBotModel():
         new_pfront_rules, new_pfront_costs, new_pfront_lifts = self.add_rules(
             rules_dict, point_selection, pfront_rules, pfront_costs, pfront_lifts, base_rule, full_data
         )
+
+        # print("Rule Mining Completed!")
 
         # 7. Format Output String
         rule_mining_str = f"Analysis for Evaluator: {eval_type.upper()}\n"
@@ -856,6 +866,7 @@ class ChatBotModel():
                 rule_str = " AND ".join(rule_set)
                 rule_mining_str += f"Rule: {rule_str}, conf(f->p): {new_pfront_costs[i,0]:.4f}, conf(p->f): {new_pfront_costs[i,1]:.4f}, lift: {new_pfront_lifts[i][0]:.4f}\n\n"
 
+        print("Rule Mining String: ", rule_mining_str)
         return rule_mining_str
 
     # def rule_mining(self, point_selection_params=None):
