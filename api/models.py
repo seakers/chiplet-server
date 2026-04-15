@@ -9,10 +9,12 @@ class OptimizationRun(models.Model):
         ('NSGA2', 'NSGA-II'),
         ('MOEA', 'Multi-Objective Evolutionary Algorithm'),
         ('FF', 'Full-Factorial'),
+        ('RL', 'Reinforcement Learning')
     ]
     
     MODEL_CHOICES = [
         ('CASCADE', 'Cascade Model'),
+        ('PISTIL', 'PISTIL Model'),
         ('CUSTOM', 'Custom Model'),
     ]
     

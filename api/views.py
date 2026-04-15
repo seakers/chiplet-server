@@ -2582,8 +2582,8 @@ Just ask me to compare any aspect of the two runs!"""
                             population_size=0,  # Not applicable for Deep RL
                             generations=0,  # Not applicable for Deep RL
                             objectives=objectives,
-                            trace_name=trace_name,
-                            trace_sets={'main': traces},
+                            trace_name=pistil_model,
+                            trace_sets={'main': pistil_model},
                             name=run_name,
                             description=f"Deep RL episodes={episodes}, mini_batch_size={mini_batch_size}, model={model}"
                         )
@@ -2594,118 +2594,47 @@ Just ask me to compare any aspect of the two runs!"""
                             execution_time_seconds = None
                             try:
                                 start_time = time.time()
-                                design_points = []
-                                
                                 print(f"✅ DEEP RL RUN: Starting Deep RL with {episodes} episodes, mini_batch_size={mini_batch_size}")
-                                print(f"✅ DEEP RL RUN: Model: {model}, Trace: {trace_name}")
+                                print(f"✅ DEEP RL RUN: Model: {model}, Trace: {pistil_model}")
                                 
-                                # TODO: Replace this with actual Deep RL implementation
-                                # For now, this is a placeholder that demonstrates the structure
-                                
-                                import random
-                                
-                                for episode in range(episodes):
-                                    if model.upper() == 'PISTIL':
-                                        # PISTIL: Generate Pistil-specific design parameters
-                                        # These are the 9 decision variables for PISTIL
-                                        num_cus = random.randint(1, 16)
-                                        num_tmacs = random.randint(1, 8)
-                                        mem_buf_cap = random.choice([64, 128, 256, 512])
-                                        net_buf_cap = random.choice([32, 64, 128])
-                                        mem_banks_per_group = random.choice([2, 4, 8])
-                                        mem_ranks = random.choice([1, 2, 4])
-                                        mem_frac_bank_cap = random.uniform(0.5, 1.0)
-                                        batch_size = random.choice([1, 2, 4, 8])
-                                        kv_cache = random.choice([0, 1])
-                                        
-                                        # TODO: Replace with actual PISTIL evaluator call
-                                        # from api.Evaluator.gaPistil import runSinglePistil
-                                        # results = runSinglePistil(...)
-                                        
-                                        # Placeholder evaluation values
-                                        latency_per_token = random.uniform(5, 50)
-                                        energy_per_inference = random.uniform(100, 1000)
-                                        energy_per_token = random.uniform(1, 10)
-                                        average_power = random.uniform(50, 200)
-                                        system_power = random.uniform(100, 500)
-                                        system_cost = random.uniform(1000, 10000)
-                                        avg_comp_util = random.uniform(0.3, 0.95)
-                                        avg_mem_util = random.uniform(0.3, 0.95)
-                                        prefill_tokens_per_sec = random.uniform(100, 1000)
-                                        latency_ms = latency_per_token * 100  # Example calculation
-                                        energy_mJ = energy_per_inference
-                                        
-                                        # Write to PISTIL CSV format (with all columns)
-                                        row = f"{num_cus},{num_tmacs},{mem_buf_cap},{net_buf_cap},{mem_banks_per_group},{mem_ranks},{mem_frac_bank_cap:.4f},{batch_size},{kv_cache},{latency_per_token:.4f},{energy_per_inference:.4f},{energy_per_token:.4f},{average_power:.4f},{system_power:.4f},{system_cost:.4f},{avg_comp_util:.4f},{avg_mem_util:.4f},{prefill_tokens_per_sec:.4f},{latency_ms:.4f},{energy_mJ:.4f}"
-                                        
-                                        with open(points_csv_path, 'a') as f:
-                                            f.write(row + "\n")
-                                        
-                                        dp = {
-                                            'execution_time_ms': latency_ms,
-                                            'energy_mj': energy_mJ,
-                                            'chiplets': {
-                                                'num_cus': num_cus,
-                                                'num_tmacs': num_tmacs,
-                                                'mem_buf_cap': mem_buf_cap,
-                                                'net_buf_cap': net_buf_cap,
-                                            },
-                                            'additional_metrics': {'episode': episode},
-                                            'context_file_path': ''
-                                        }
-                                        
-                                    else:
-                                        # CASCADE: Generate chiplet configuration
-                                        gpu = random.randint(0, 8)
-                                        attn = random.randint(0, 8)
-                                        sparse = random.randint(0, 8)
-                                        conv = 12 - gpu - attn - sparse
-                                        if conv < 0:
-                                            conv = 0
-                                            total = gpu + attn + sparse
-                                            if total > 12:
-                                                gpu = min(gpu, 12 - attn - sparse)
-                                        
-                                        # TODO: Replace with actual CASCADE evaluator call
-                                        # from api.Evaluator.gaCascade import runSingleCascade
-                                        # exec_ms, energy_mj = runSingleCascade(
-                                        #     chiplets={"GPU": gpu, "Attention": attn, "Sparse": sparse, "Convolution": conv},
-                                        #     trace=trace_name,
-                                        #     save_to_csv=False  # We'll write manually
-                                        # )
-                                        
-                                        # Placeholder values for testing
-                                        exec_ms = random.uniform(10, 100)
-                                        energy_mj = random.uniform(50, 500)
-                                        
-                                        # Write to CASCADE CSV format (no header)
-                                        with open(points_csv_path, 'a') as f:
-                                            f.write(f"{exec_ms},{energy_mj},{gpu},{attn},{sparse},{conv}\n")
-                                        
-                                        dp = {
-                                            'execution_time_ms': exec_ms,
-                                            'energy_mj': energy_mj,
-                                            'chiplets': {
-                                                'GPU': gpu,
-                                                'Attention': attn,
-                                                'Sparse': sparse,
-                                                'Convolution': conv
-                                            },
-                                            'additional_metrics': {'episode': episode},
-                                            'context_file_path': ''
-                                        }
+                                if model.upper() == 'PISTIL':
+                                    # Import and run PPO for Pistil
+                                    from api.Evaluator.rlPistil import runPPOPistil
                                     
-                                    design_points.append(dp)
+                                    designs, objectives, design_points = runPPOPistil(
+                                        num_epochs=episodes,
+                                        mini_batch_size=mini_batch_size,
+                                        model_name=pistil_model if pistil_model else "llama3-8b",
+                                        output_dir=points_csv_path
+                                    )
                                     
-                                    # Log progress periodically
-                                    if (episode + 1) % 10 == 0:
-                                        print(f"✅ DEEP RL RUN ({model}): Completed episode {episode + 1}/{episodes}")
+                                    # Write to CSV (your existing format)
+                                    # for dp in design_points:
+                                    #     row = f"{dp['num_cus']},{dp['num_tmacs']},{dp['mem_buf_cap']},{dp['net_buf_cap']},{dp['mem_banks_per_group']},{dp['mem_ranks']},{dp['mem_frac_bank_cap']:.4f},{dp['batch_size']},{dp['kv_cache']},{dp['latency_ms']:.4f},{dp['energy_mJ']:.4f}"
+                                    #     with open(points_csv_path, 'a') as f:
+                                    #         f.write(row + "\n")
+                                            
+                                else:
+                                    # Import and run PPO for Cascade
+                                    from api.Evaluator.rlCascade import runPPOCascade
+                                    
+                                    designs, objectives, design_points = runPPOCascade(
+                                        num_epochs=episodes,
+                                        mini_batch_size=mini_batch_size,
+                                        trace=trace_name if trace_name else "gpt-j-65536-weighted",
+                                    )
+                                    
+                                    # Write to CSV (your existing format)
+                                    for dp in design_points:
+                                        c = dp['chiplets']
+                                        with open(points_csv_path, 'a') as f:
+                                            f.write(f"{dp['execution_time_ms']},{dp['energy_mj']},{c['GPU']},{c['Attention']},{c['Sparse']},{c['Convolution']}\n")
                                 
                                 # Calculate execution time
                                 execution_time_seconds = time.time() - start_time
                                 print(f"✅ DEEP RL RUN ({model}): Completed {len(design_points)} episodes in {execution_time_seconds:.2f} seconds")
                                 
-                                # Store design points in database
+                                # Store design points in database (existing code)
                                 if design_points:
                                     print(f"✅ DEEP RL RUN: Storing {len(design_points)} design points to database")
                                     RunStorageService.store_design_points(
@@ -2714,7 +2643,7 @@ Just ask me to compare any aspect of the two runs!"""
                                         run_dir
                                     )
                                     print(f"✅ DEEP RL RUN: Design points stored successfully")
-                                
+            
                             except Exception as e:
                                 print(f"❌ DEEP RL RUN: Error during execution: {e}")
                                 import traceback

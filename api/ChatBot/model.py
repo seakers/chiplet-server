@@ -631,110 +631,88 @@ class ChatBotModel():
         """
         Calculate distance correlations between objectives and design variables
         """
-        print("a")
-        print(self.evaluator)
+        print(f"Running dcor_manager for evaluator: {self.evaluator}")
+        
+        point_vals = []
+        design_vals = []
+        decision_cols = []
+        metric_cols = []
+
         if self.evaluator.lower() == 'cascade':
             file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+            decision_cols = ["GPU", "Attention", "Sparse", "Convolution"]
+            metric_cols = ["exe_time", "energy"]
+            
+            # Cascade uses a specific JSON-based deduplication in your original snippet
+            temp_full_data = []
             with open(file_path, mode='r') as file:
                 csv_reader = csv.reader(file)
-                full_data = []
-                for row in csv_reader:         
-                    full_data.append(
-                        json.dumps(
-                            {
-                                "exe_time": float(row[0]),
-                                "energy": float(row[1]),
-                                "chiplets": {
-                                    "GPU": int(row[2]),
-                                    "Attention": int(row[3]),
-                                    "Sparse": int(row[4]),
-                                    "Convolution": int(row[5])
-                                }
-                            },
-                            sort_keys=True
-                        )
-                    )
+                for row in csv_reader:
+                    # Based on your original: [exe, energy, GPU, Attn, Sparse, Conv]
+                    data_dict = {
+                        "metrics": [float(row[0]), float(row[1])],
+                        "decisions": [int(row[2]), int(row[3]), int(row[4]), int(row[5])]
+                    }
+                    temp_full_data.append(json.dumps(data_dict, sort_keys=True))
 
-            full_data = [json.loads(item) for item in set(full_data)]
+            # Deduplicate and unpack
+            unique_data = [json.loads(item) for item in set(temp_full_data)]
+            for data in unique_data:
+                point_vals.append(data["metrics"])
+                design_vals.append(data["decisions"])
 
-            point_vals = []
-            design_vals = []
-            for data in full_data:
-                point_vals.append([data["exe_time"], data["energy"]])
-                design_vals.append([data["chiplets"]["GPU"], data["chiplets"]["Attention"],
-                                    data["chiplets"]["Sparse"], data["chiplets"]["Convolution"]])
-        
         elif self.evaluator.lower() == 'pistil':
-            print("b")
-            file_path = 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/' + self.run_id + '/points.csv'
-            # Columns in the CSV file
+            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{self.run_id}/points.csv'
             decision_cols = [
                 "num_cus", "num_tmacs", "mem_buf_cap", "net_buf_cap",
                 "mem_banks_per_group", "mem_ranks", "mem_frac_bank_cap",
                 "batch_size", "kv_cache"
             ]
-            metric_cols = [
-                # Core objectives (for GA)
-                "latency_ms", "energy_mJ",
-                # Derived performance metrics
-                "latency_per_token_ms", "energy_per_inference_mJ", "energy_per_token_mJ",
-                "prefill_tokens_per_sec",
-                # Power metrics
-                "average_power_W", "system_power_W",
-                "average_power_mem_W", "average_power_comp_W", "average_power_net_W",
-                # Cost metrics (all cost breakdowns)
-                "system_cost",
-                "chiplet_silicon_cost", "memory_cost_2xHBLC", "package_cost",
-                "package_silicon_cost", "package_memory_cost", "package_substrate_cost",
-                "system_silicon_cost", "system_memory_cost", "system_substrate_cost", "system_pcb_cost",
-                # Utilization metrics
-                "avg_comp_util", "avg_mem_util",
-                # System configuration
-                "system_compute_TOPS", "system_bandwidth_TBps", "system_capacity_GB",
-                "num_packages", "num_chiplets",
-                # Memory/HBLC metrics
-                "hblc_capacity_GB", "hblc_bandwidth_GBps", "hblc_bw_per_capacity",
-                "peak_buffer_MB", "avg_cache_util_MB",
-                # Model capacity metrics
-                "model_weight_capacity_GB", "kv_cache_capacity_per_batch_GB", "total_model_capacity_GB",
-                # Additional system parameters
-                "cores_per_cu", "mem_buffer_size", "net_buffer_size", "tmacs_per_core",
-                "hblc_bank_groups", "hblc_ranks", "hblc_frac_bank_cap"
-            ]
+            metric_cols = ["latency_ms", "energy_mJ"]
+
             with open(file_path, mode='r') as file:
                 csv_reader = csv.reader(file)
-                point_vals = []
-                design_vals = []
+                header = next(csv_reader) # Skip header
                 for row in csv_reader:
-                    if row[0] == "num_cus":  # skip header
-                        continue
+                    # Pistil: Decisions first, then Metrics
                     design_val = [float(row[i]) for i in range(len(decision_cols))]
-                    point_val = [float(row[len(decision_cols) + i]) for i in range(2)]  # assuming first two metrics are objectives
-                    point_vals.append(point_val)
+                    point_val = [float(row[len(decision_cols) + i]) for i in range(len(metric_cols))]
                     design_vals.append(design_val)
+                    point_vals.append(point_val)
 
-
+        # Convert to numpy arrays for calculation
         point_vals = np.array(point_vals)
         design_vals = np.array(design_vals)
 
-        distance_correlation_str = self.get_distance_correlations(point_vals, design_vals)
+        # Pass the column names dynamically to the correlation function
+        distance_correlation_str = self.get_distance_correlations(
+            point_vals, 
+            design_vals, 
+            metric_cols, 
+            decision_cols
+        )
 
         return distance_correlation_str
 
-    def get_distance_correlations(self, objective_vals, design_vals):
-        print("c")
-        objectives = ["exe_time", "energy"]
-        chiplets = ["GPU", "Attention", "Sparse", "Convolution"]
+    def get_distance_correlations(self, objective_vals, design_vals, metric_names, decision_names):
+        """
+        Computes distance correlation and labels the output string dynamically.
+        """
         dist_corr_str = ""
 
-        for obj_ind, obj in enumerate(objectives):
-            for chiplet_ind, chiplet in enumerate(chiplets):
-                obj_vals = np.array(objective_vals[:, obj_ind], dtype=float)
-                des_vals = np.array(design_vals[:, chiplet_ind], dtype=float)
-                dist_corr = distance_correlation(obj_vals, des_vals)
-                dist_corr_str = dist_corr_str + f"Distance correlation between objective {obj} and chiplet type {chiplet} is {dist_corr:.4f}.\n"
+        for obj_ind, obj_name in enumerate(metric_names):
+            for des_ind, des_name in enumerate(decision_names):
+                # Ensure we are using 1D arrays for the correlation function
+                obj_column = np.array(objective_vals[:, obj_ind], dtype=float)
+                des_column = np.array(design_vals[:, des_ind], dtype=float)
+                
+                # Assuming distance_correlation is imported/available globally
+                dist_corr = distance_correlation(obj_column, des_column)
+                
+                dist_corr_str += (f"Distance correlation between objective '{obj_name}' "
+                                f"and variable '{des_name}' is {dist_corr:.4f}.\n")
 
-        print("Distance Correlation String: ", dist_corr_str, "\n\n")
+        print("Distance Correlation Summary:\n", dist_corr_str)
         return dist_corr_str
     
     def rule_mining(self, point_selection_params=None):
@@ -1225,15 +1203,15 @@ class ChatBotModel():
                 "Do NOT add extra prose or explanation in the same message — only return the structured call or a short JSON error.\n\n"
 
                 "Required single-line format (keys are lowercase, order may vary, but keep the same tokens and separators):\n"
-                "model: <cascade|hisim>, algorithm: <Genetic Algorithm|Full-Factorial>, population: <int>, generations: <int>, objectives: <space-separated-list-of-energy|time|latency>, trace: <gpt-[a-z0-9-]+>\n\n"
+                "model: <cascade|pistil|hisim>, algorithm: <Genetic Algorithm|Reinforcement Learning|Full-Factorial>, population: <int>, generations: <int>, objectives: <space-separated-list-of-energy|time|latency>, trace: <gpt-[a-z0-9-]+|llama[0-9]+-[0-9]+>\n\n"
 
                 "Rules and examples:\n"
-                "- model: use 'cascade' or 'hisim' (case-insensitive for values). Example: model: cascade\n"
-                "- algorithm: exactly 'Genetic Algorithm' or 'Full-Factorial' (capitalization as shown). Example: algorithm: Genetic Algorithm\n"
+                "- model: use 'cascade', 'pistil', or 'hisim' (case-insensitive for values). Example: model: cascade\n"
+                "- algorithm: exactly 'Genetic Algorithm', 'Reinforcement Learning', or 'Full-Factorial' (capitalization as shown). Example: algorithm: Genetic Algorithm\n"
                 "- population: integer (required for Genetic Algorithm; optional for Full-Factorial). Example: population: 50\n"
                 "- generations: integer (required for Genetic Algorithm; optional/ignored for Full-Factorial). Example: generations: 20\n"
                 "- objectives: one or more of 'energy', 'time', 'latency' separated by spaces. Example: objectives: energy time\n"
-                "- trace: one or more trace lines may appear; each trace value must match pattern gpt-[a-z0-9-]+. Example: trace: gpt-j-65536-weighted\n"
+                "- trace: one or more trace lines may appear; each trace value for cascade must match pattern gpt-[a-z0-9-]+. Example: trace: gpt-j-65536-weighted. Each trace value for pistil must match pattern llama[0-9]+-[0-9]+. Example: trace: llama3-8b\n"
                 "- For multiple traces, include multiple 'trace:' entries separated by commas in the same line: trace: gpt-a, trace: gpt-b\n\n"
 
                 "Minimal valid request must include: model, algorithm, at least one trace, and at least one objective. "
@@ -1242,6 +1220,7 @@ class ChatBotModel():
 
                 "Examples of valid single-line outputs (these exact styles are preferred):\n"
                 "- model: cascade, algorithm: Genetic Algorithm, population: 50, generations: 20, objectives: energy time, trace: gpt-j-65536-weighted\n"
+                "- model: pistil, algorithm: Reinforcement Learning, objectives: energy, trace: llama3-8b\n"
                 "- model: hisim, algorithm: Full-Factorial, objectives: time, trace: gpt-alpha, trace: gpt-beta\n\n"
 
                 "Keep the response concise and ONLY return the single structured specification line or the JSON error. "
@@ -1293,8 +1272,10 @@ class ChatBotModel():
             alg = a.group(1).lower()
             if "genetic" in alg:
                 result["algorithm"] = "Genetic Algorithm"
-            else:
+            elif "full" in alg or "factorial" in alg:
                 result["algorithm"] = "Full-Factorial"
+            elif "rl" in alg or "reinforcement" in alg:
+                result["algorithm"] = "Reinforcement Learning"
 
         # 3) Population and generations (integers)
         p = re.search(r"population:\s*(\d+)\b", content_line, re.IGNORECASE)
