@@ -14,9 +14,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from api.config.settings import EVALUATOR_BASE_PATHS
-from api.core.data.loaders import PointsLoader
-from api.Evaluator.gaCascade import runGACascade
-from api.Evaluator.runSingleCascade import runSingleCascade
+from api.data.loaders import PointsLoader
+from api.Evaluator.gaCascade import runGACascade, runSingleCascade
 
 
 def convert_ndarrays(obj):

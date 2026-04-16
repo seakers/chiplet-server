@@ -7,7 +7,7 @@ from typing import Dict, Any
 from .base import BaseAgent, AgentResult
 from .registry import AgentRegistry
 from api.analysis.distance_correlation import DistanceCorrelationAnalyzer
-from api.core.data.loaders import PointsLoader
+from api.data.loaders import PointsLoader
 
 
 @AgentRegistry.register

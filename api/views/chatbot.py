@@ -1,6 +1,6 @@
 """
 ChatBot API endpoints.
-Consolidates chatbot endpoints from views.py [1].
+Consolidates chatbot endpoints from views.py <source_id data="1" title="views.py" />.
 """
 import json
 import os
@@ -28,7 +28,7 @@ def get_chatbot(evaluator: str = 'cascade', run_id: str = None) -> ChatBot:
 def chat(request):
     """
     Handle chat messages from the user.
-    Refactored from views.py [1].
+    Refactored from views.py <source_id data="1" title="views.py" />.
     """
     try:
         data = json.loads(request.body)
@@ -64,10 +64,49 @@ def chat(request):
 
 
 @api_view(["POST"])
+def data_mining_followup(request):
+    """
+    Handle follow-up questions about data mining results with context-aware responses.
+    Refactored from views.py <source_id data="1" title="views.py" />.
+    """
+    try:
+        evaluator = request.GET.get("evaluator", "cascade")
+        run_id = request.GET.get("run_id")
+        
+        bot = get_chatbot(evaluator, run_id)
+        
+        data = json.loads(request.body)
+        question = data.get("question")
+        data_mining_type = data.get("data_mining_type")  # "rule_mining" or "distance_correlation"
+        structured_data = data.get("structured_data", {})
+        
+        if not question or not data_mining_type:
+            return Response({
+                "error": "question and data_mining_type are required"
+            }, status=400)
+        
+        # Build context-aware prompt based on data mining type
+        if data_mining_type == "rule_mining":
+            context = f"Based on the rule mining results: {json.dumps(structured_data)}\n\nUser question: {question}"
+        elif data_mining_type == "distance_correlation":
+            context = f"Based on the distance correlation analysis: {json.dumps(structured_data)}\n\nUser question: {question}"
+        else:
+            context = question
+        
+        response = bot.get_response(context)
+        
+        return Response({"response": response})
+        
+    except Exception as e:
+        print(f"Error in data_mining_followup: {e}")
+        return Response({"error": str(e)}, status=500)
+
+
+@api_view(["POST"])
 def add_run_context(request):
     """
     Add optimization run context to the chatbot.
-    Refactored from views.py [1].
+    Refactored from views.py <source_id data="1" title="views.py" />.
     """
     try:
         data = json.loads(request.body)
@@ -103,7 +142,7 @@ def add_run_context(request):
 def add_point_context(request):
     """
     Add specific design point context to the chatbot.
-    Refactored from views.py [1].
+    Refactored from views.py <source_id data="1" title="views.py" />.
     """
     try:
         data = json.loads(request.body)
@@ -126,6 +165,55 @@ def add_point_context(request):
 
 
 @api_view(["POST"])
+def add_enhanced_insights_context(request):
+    """
+    Add both summary and detailed context to the AI's conversation history.
+    Refactored from views.py <source_id data="1" title="views.py" />.
+    """
+    try:
+        data = json.loads(request.body)
+        summary_insights = data.get("summary_insights")
+        detailed_context = data.get("detailed_context")
+        
+        if not summary_insights:
+            return Response({"error": "summary_insights is required"}, status=400)
+        
+        bot = get_chatbot()
+        
+        # Create enhanced context message
+        context_message = f"Here are the insights from the analysis:\n\n{summary_insights}\n\n"
+        
+        if detailed_context:
+            context_message += f"I have detailed analysis available for this design point including:\n"
+            context_message += f"- Per-chiplet energy breakdown and execution time\n"
+            context_message += f"- Memory access patterns and bottlenecks\n"
+            context_message += f"- Work distribution across chiplets\n"
+            context_message += f"- Energy efficiency metrics\n\n"
+            context_message += f"You can ask detailed questions like:\n"
+            context_message += f"- 'What is the energy bottleneck for this design?'\n"
+            context_message += f"- 'Which chiplet is consuming the most memory?'\n"
+            context_message += f"- 'How is the work distributed across chiplets?'\n"
+            context_message += f"- 'What's the energy efficiency of each component?'\n\n"
+            context_message += f"Detailed context data is available for analysis."
+        else:
+            context_message += f"I have this context and can answer follow-up questions about these insights."
+        
+        # Add the enhanced context to AI memory
+        bot.messages.append({
+            "role": "assistant",
+            "content": context_message
+        })
+        
+        return Response({"message": "Enhanced insights context added successfully"})
+        
+    except Exception as e:
+        print(f"Error in add_enhanced_insights_context: {e}")
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+
+
+@api_view(["POST"])
 def clear_chat_history(request):
     """
     Clear the chatbot conversation history.
@@ -136,26 +224,3 @@ def clear_chat_history(request):
         return Response({"message": "Chat history cleared"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
-
-@api_view(["POST"])
-def data_mining_followup(request):
-    """
-    Handle follow-up questions about data mining results.
-    Refactored from views.py [1].
-    """
-    try:
-        data = json.loads(request.body)
-        question = data.get("question")
-        data_mining_type = data.get("data_mining_type")
-        structured_data = data.get("structured_data", {})
-        evaluator = request.GET.get("evaluator", "cascade")
-        run_id = request.GET.get("run_id")
-        
-        if not question or not data_mining_type:
-            return Response({
-                "error": "question and data_mining_type are required"
-            }, status=400)
-        
-        bot = get_chatbot(evaluator, run_id)
-        bot.

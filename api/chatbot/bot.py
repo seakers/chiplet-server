@@ -11,7 +11,7 @@ import dotenv
 
 from api.config.prompts import SystemPrompts, FollowUpSuggestions
 from api.config.evaluators import get_evaluator_config
-from api.core.data.loaders import PointsLoader
+from api.data.loaders import PointsLoader
 from .agents import (
     AgentRegistry, 
     BaseAgent, 

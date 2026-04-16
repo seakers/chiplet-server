@@ -15,7 +15,7 @@ from rest_framework.response import Response
 
 from api.config.settings import get_points_file, EVALUATOR_BASE_PATHS
 from api.config.evaluators import get_evaluator_config
-from api.core.data.loaders import PointsLoader
+from api.data.loaders import PointsLoader
 from api.analysis.pareto import ParetoCalculator
 from api.analysis.rule_mining import RuleMiner, RuleFormatter
 from api.analysis.distance_correlation import DistanceCorrelationAnalyzer

@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 from .base import BaseAgent, AgentResult
 from .registry import AgentRegistry
 from api.analysis.rule_mining import RuleMiner, RuleFormatter
-from api.core.data.loaders import PointsLoader
+from api.data.loaders import PointsLoader
 
 
 @AgentRegistry.register
