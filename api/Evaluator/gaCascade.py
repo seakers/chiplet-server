@@ -153,6 +153,13 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
     import numpy as np
     import os
     # --- Always clear points.csv before starting new GA run ---
+    WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
+    TRACE_DIR=WORKSPACE+'/traces'
+    CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
+    if output_dir is not None:
+        OUTPUT_DIR = output_dir
+    else:
+        OUTPUT_DIR=WORKSPACE+'/dse/results'
     result_dir = output_dir if output_dir is not None else OUTPUT_DIR
     points_file = os.path.join(result_dir, "points.csv")
     with open(points_file, 'w') as f:
@@ -176,14 +183,7 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
             print("No trace provided.")
             print("Selecting a random trace.")
             trace = "gpt-j-65536-weighted"
-        WORKSPACE=sys.path[0]+'/api/Evaluator/cascade/chiplet_model'
-        TRACE_DIR=WORKSPACE+'/traces'
-        CHIPLET_LIBRARY=WORKSPACE+'/dse/chiplet-library'
         EXPERIMENT_DIR=WORKSPACE+'/dse/experiments/'+trace+'.json'
-        if output_dir is not None:
-            OUTPUT_DIR = output_dir
-        else:
-            OUTPUT_DIR=WORKSPACE+'/dse/results'
         traces_available = ["gpt-j-65536-weighted", "gpt-j-1024-weighted", "sd-test", "dnn-test", "resnet50-test"]
         print("experiment being performed: ", EXPERIMENT_DIR)
         print("Pop Size: ", pop_size)

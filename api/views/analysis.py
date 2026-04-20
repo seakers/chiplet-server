@@ -260,3 +260,93 @@ def distance_correlation_insights(request):
         import traceback
         print(f"[distance_correlation_insights] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
+    
+
+@api_view(["GET"])
+def rule_mining_insights(request):
+    """
+    Run rule mining and return LLM-generated natural language summary.
+    Mirrors rule_mining_insights from views.py [1].
+    """
+    try:
+        evaluator  = request.GET.get("evaluator", "cascade")
+        run_id     = request.GET.get("run_id")
+        objective  = request.GET.get("objective", "both")
+        trace_name = request.GET.get("trace_name", "Unknown")
+        region     = request.GET.get("region", "pareto")
+        pareto_start_rank = int(request.GET.get("paretoStartRank", 1))
+        pareto_end_rank   = int(request.GET.get("paretoEndRank", 3))
+        energy_min = request.GET.get("energyMin")
+        energy_max = request.GET.get("energyMax")
+        time_min   = request.GET.get("timeMin")
+        time_max   = request.GET.get("timeMax")
+        
+        point_selection_params = {
+            "region": region,
+            "pareto_start_rank": pareto_start_rank,
+            "pareto_end_rank": pareto_end_rank,
+            "energy_min": float(energy_min) if energy_min else None,
+            "energy_max": float(energy_max) if energy_max else None,
+            "time_min":   float(time_min)   if time_min   else None,
+            "time_max":   float(time_max)   if time_max   else None,
+        }
+        
+        chat_bot = ChatBot(evaluator=evaluator, run_id=run_id)
+        rule_mining_str = chat_bot.rule_mining(point_selection_params)
+        
+        # Parse rules into structured format
+        rules = []
+        rule_pattern = re.compile(
+            r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \(?([0-9.eE+-]+)\)?"
+        )
+        for match in rule_pattern.finditer(rule_mining_str):
+            rule_str = match.group(1)
+            conditions = [
+                RuleFormatter.format_rule_natural_language(c.strip())
+                for c in rule_str.split(' AND ')
+            ]
+            rules.append({
+                "conditions":         conditions,
+                "confidence_f_to_p":  round(float(match.group(2)), 3),
+                "confidence_p_to_f":  round(float(match.group(3)), 3),
+                "lift":               round(float(match.group(4)), 3),
+            })
+        
+        structured_data = {
+            "rules":           rules,
+            "trace_name":      trace_name,
+            "objective":       objective,
+            "run_id":          run_id,
+            "analysis_region": f"{region} (ranks {pareto_start_rank}-{pareto_end_rank})"
+        }
+        
+        # Goal-aware prompt
+        goal_map = {
+            "energy": "minimize energy consumption",
+            "time":   "minimize execution time",
+        }
+        goal_text = goal_map.get(objective, "optimize both energy and execution time")
+        
+        prompt = (
+            f"You are a chiplet design analyst. A rule mining analysis was run on "
+            f"Pareto-optimal points for the goal: {goal_text}.\n\n"
+            f"Trace used: {trace_name}\n\n"
+            f"Here are the rules extracted:\n"
+            f"JSON Data:\n{json.dumps(structured_data, indent=2)}\n\n"
+            f"Provide a concise, actionable summary (2-3 sentences) covering:\n"
+            f"1. The most important recurring pattern in optimal designs\n"
+            f"2. One specific recommendation for chiplet combination\n"
+            f"3. Any rule conflicts or redundancies (if any)\n\n"
+            f"Keep your response focused and to the point."
+        )
+        
+        response = chat_bot.get_response(prompt)
+        
+        # Remove any stray distance correlation sentences
+        sentences = re.split(r'(?<=[.!?])\s+', response)
+        cleaned = ' '.join(s for s in sentences if 'distance correlation' not in s.lower())
+        
+        return Response({"insights": cleaned, "structured_data": structured_data})
+        
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)

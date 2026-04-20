@@ -224,3 +224,107 @@ def clear_chat_history(request):
         return Response({"message": "Chat history cleared"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+    
+
+@api_view(["GET"])
+def add_info(request):
+    """
+    Add chiplet design point context to chatbot.
+    Mirrors add_info from views.py [1].
+    """
+    gpu   = request.GET.get("gpu", "0")
+    attn  = request.GET.get("attn", "0")
+    sparse = request.GET.get("sparse", "0")
+    conv  = request.GET.get("conv", "0")
+    
+    chiplet_file_path = (
+        f"api/Evaluator/cascade/chiplet_model/dse/results/"
+        f"pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+    )
+    
+    bot = get_chatbot()
+    bot.add_information(chiplet_file_path)
+    bot.messages.append({
+        "role": "assistant",
+        "content": "I have received context on this design! I am ready to answer questions about it."
+    })
+    
+    return Response({"message": "Information added successfully."})
+
+
+@api_view(["GET"])
+def get_chat_response(request):
+    """
+    GET-based chat endpoint (legacy compatibility).
+    Mirrors get_chat_response from views.py [1].
+    """
+    content  = request.GET.get("content")
+    role     = request.GET.get("role", "user")
+    evaluator = request.GET.get("evaluator", "cascade")
+    run_id   = request.GET.get("run_id", None)
+    
+    if not content:
+        return Response({"error": "content is required"}, status=400)
+    
+    bot = get_chatbot(evaluator, run_id)
+    
+    try:
+        filters = {}
+        for key in ["trace", "doc_type"]:
+            val = request.GET.get(key)
+            if val:
+                filters[key] = val
+        
+        rag_result = bot.get_response(content, role, use_retrieval=True, filters=filters or None)
+        if isinstance(rag_result, dict) and rag_result.get("final_answer"):
+            return Response({
+                "response": rag_result["final_answer"],
+                "citations": rag_result.get("citations", [])
+            })
+    except Exception:
+        pass
+    
+    response = bot.get_response(content, role)
+    return Response({"response": response})
+
+
+@api_view(["GET"])
+def get_latest_run_directory(request):
+    """
+    Return the most recent myrun_ directory for chat-triggered run discovery [1].
+    """
+    try:
+        base_path = "api/Evaluator/cascade/chiplet_model/dse/results"
+        if not os.path.exists(base_path):
+            return Response({"error": "results directory not found"}, status=404)
+        
+        candidates = [d for d in os.listdir(base_path) if d.startswith("myrun_")]
+        if not candidates:
+            return Response({"status": "empty"})
+        
+        latest = sorted(candidates)[-1]
+        return Response({"status": "success", "run_directory": latest})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
+@api_view(["POST"])
+def add_insights_context(request):
+    """
+    Add plain insights string to chatbot history [1].
+    """
+    try:
+        data = json.loads(request.body)
+        insights = data.get("insights")
+        
+        if not insights:
+            return Response({"error": "No insights provided"}, status=400)
+        
+        bot = get_chatbot()
+        bot.messages.append({
+            "role": "assistant",
+            "content": f"Here are the insights from the analysis:\n\n{insights}\n\nI have this context and can answer follow-up questions about these insights."
+        })
+        return Response({"message": "Insights context added successfully"})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
