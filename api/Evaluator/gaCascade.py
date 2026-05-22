@@ -61,24 +61,21 @@ class CascadeProblem(ElementwiseProblem):
         # else:
 
         result_file = self.OUTPUT_DIR + "/points.csv"
-        entry = f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]}\n"
-        # Check if entry already exists
-        exists = False
-        try:
-            with open(result_file, "r") as f:
-                for line in f:
-                    if line.strip() == entry.strip():
-                        exists = True
-                        break
-        except FileNotFoundError:
-            pass  # File does not exist yet
+        algorithm_label = getattr(self, 'algorithm_label', 'Genetic Algorithm')
+        entry = f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]},{algorithm_label}\n"
 
-        if not exists:
-            with open(result_file, "a") as f:
-                f.write(entry)
-                print(f"Summary saved to {result_file}")
+        # Always append to points.csv (even duplicates) so evaluation order is preserved
+        # for hypervolume curve reconstruction in compare_optimizers.py
+        with open(result_file, "a") as f:
+            f.write(entry)
+            print(f"Summary saved to {result_file}")
 
-            context_file = self.OUTPUT_DIR + "/pointContext/" + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
+        # Only write the heavy context JSON if this is a new unique design
+        context_file = (
+            self.OUTPUT_DIR + "/pointContext/"
+            + f"{numChips[0]}gpu{numChips[1]}attn{numChips[2]}sparse{numChips[3]}conv.json"
+        )
+        if not os.path.exists(context_file):
             os.makedirs(os.path.dirname(context_file), exist_ok=True)
             with open(context_file, "w") as f:
                 jsonData = []
@@ -88,9 +85,8 @@ class CascadeProblem(ElementwiseProblem):
                     jsonData.append(resultCopy)
                 json.dump(jsonData, f, indent=4)
             print(f"Results saved to {context_file}")
-
         else:
-            print(f"Entry already exists in {result_file}, not writing duplicate.")
+            print(f"Context file already exists, skipping JSON write.")
 
         out["F"] = [total_exe, total_energy]
 
@@ -189,6 +185,7 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
         print("Pop Size: ", pop_size)
         print("Number of Generations: ", n_gen)
         problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
+        problem.algorithm_label = 'Genetic Algorithm'
         # Use initial_population if provided, else IntegerRandomSampling
         if initial_population is not None:
             print("Using provided initial population for GA.")
@@ -220,7 +217,7 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
             return {"objectives": res.F, "decisions": res.X}
         return res.F
 
-def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="", save_to_csv=True):
+def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="", save_to_csv=True, source="Custom"):
     """
     Run a single instance of the Cascade model.
     """
@@ -305,7 +302,7 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     # Only save to CSV if save_to_csv is True (for genetic algorithm points, not custom designs)
     if save_to_csv:
         result_file = OUTPUT_DIR + "/points.csv"
-        entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']}\n"
+        entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']},{source}\n"
         # Check if entry already exists
         exists = False
         try:

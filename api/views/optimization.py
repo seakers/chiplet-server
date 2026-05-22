@@ -110,8 +110,10 @@ def get_chart_data(request):
 
         trace_name = request.GET.get("trace", "gpt-j-65536-weighted")
         for point in points:
-            point['algorithm'] = algorithm_to_use
+            if not point.get('algorithm'):
+                point['algorithm'] = algorithm_to_use
             point['trace'] = trace_name
+            point['model'] = 'CASCADE'
 
         return Response({"data": points})
 
@@ -134,8 +136,10 @@ def get_chart_data(request):
 
         trace_name = request.GET.get("trace", "pistil-default")
         for point in points:
-            point['algorithm'] = algorithm_to_use
+            if not point.get('algorithm'):
+                point['algorithm'] = algorithm_to_use
             point['trace'] = trace_name
+            point['model'] = 'PISTIL'
 
         return Response({"data": points})
 
@@ -187,11 +191,116 @@ def run_optimization(request):
         if algorithm_raw in ('Genetic Algorithm', 'GA'):
             if population <= 0:
                 return JsonResponse({"status": "error",
-                                     "message": f"population_size must be > 0, got {population}"}, status=400)
+                                    "message": f"population_size must be > 0, got {population}"}, status=400)
             if generations <= 0:
                 return JsonResponse({"status": "error",
-                                     "message": f"generations must be > 0, got {generations}"}, status=400)
+                                    "message": f"generations must be > 0, got {generations}"}, status=400)
 
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # PISTIL GA handling
+            if model.upper() == 'PISTIL':
+                pistil_model = data.get('pistil_model', 'llama3-8b')
+                run_id = f"pistil_run_{timestamp}"
+                pistil_root = Path(sys.path[0]) / "api" / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                output_dir = pistil_root / "dse" / "results" / run_id
+                os.makedirs(output_dir, exist_ok=True)
+                points_csv_path = str(output_dir / "points.csv")
+                
+                # Write PISTIL CSV header
+                pistil_header = (
+                    "num_cus,num_tmacs,mem_buf_cap,net_buf_cap,mem_banks_per_group,"
+                    "mem_ranks,mem_frac_bank_cap,batch_size,kv_cache,"
+                    "latency_per_token_ms,energy_per_inference_mJ,energy_per_token_mJ,"
+                    "average_power_W,system_power_W,system_cost,"
+                    "avg_comp_util,avg_mem_util,prefill_tokens_per_sec,"
+                    "latency_ms,energy_mJ"
+                )
+                with open(points_csv_path, 'w') as f:
+                    f.write(pistil_header + "\n")
+                print(f"[GA PISTIL] Created output dir: {output_dir}")
+                
+                # Create DB record
+                optimization_run = RunStorageService.create_optimization_run(
+                    run_id=run_id,
+                    algorithm='GA',
+                    model='PISTIL',
+                    population_size=population,
+                    generations=generations,
+                    objectives=objectives,
+                    trace_name=pistil_model,
+                    trace_sets={'main': pistil_model},
+                    name="Optimization Run - PISTIL Genetic Algorithm",
+                    description=f"PISTIL GA pop={population} gen={generations} model={pistil_model}"
+                )
+                
+                def run_pistil_ga_job():
+                    execution_time_seconds = 0
+                    design_points = []
+                    try:
+                        start = time.time()
+                        print(f"[GA PISTIL Background] Starting: pop={population}, gen={generations}, model={pistil_model}")
+                        
+                        # Import and run PISTIL GA
+                        from api.Evaluator.gaPistil import runGAPistil
+                        ga_result, design_points = runGAPistil(
+                            pop_size=population,
+                            n_gen=generations,
+                            model_name=pistil_model,
+                            output_dir=str(output_dir)
+                        )
+                        
+                        execution_time_seconds = time.time() - start
+                        print(f"[GA PISTIL Background] Done. {len(design_points)} pts in {execution_time_seconds:.1f}s")
+                        
+                        # Store design points
+                        if design_points:
+                            RunStorageService.store_design_points(optimization_run, design_points, str(output_dir))
+                        
+                        # Run analytics
+                        analytics_results = _run_analytics(points_csv_path, 'pistil')
+                        
+                        RunStorageService.complete_run(
+                            optimization_run,
+                            execution_time_seconds=execution_time_seconds,
+                            analytics_results=analytics_results
+                        )
+                        print(f"[GA PISTIL Background] Run {optimization_run.run_id} complete.")
+                        
+                    except Exception as e:
+                        print(f"[GA PISTIL Background] Error: {e}")
+                        traceback.print_exc()
+                        try:
+                            RunStorageService.complete_run(
+                                optimization_run,
+                                execution_time_seconds=execution_time_seconds,
+                                analytics_results={'rule_mining': '', 'distance_correlation': ''}
+                            )
+                        except Exception:
+                            pass
+                
+                # START THREAD
+                threading.Thread(target=run_pistil_ga_job, daemon=True).start()
+                
+                return JsonResponse({
+                    'status':         'started',
+                    'data':           [],
+                    'plot_data':      [],
+                    'run_id':         run_id,
+                    'pistil_run_id':  run_id,
+                    'run_directory':  run_id,
+                    'db_run_id':      optimization_run.run_id,
+                    'metadata': {
+                        'model':           'PISTIL',
+                        'algorithm':       'Genetic Algorithm',
+                        'objectives':      objectives,
+                        'population_size': population,
+                        'generations':     generations,
+                        'pistil_model':    pistil_model,
+                    }
+                })
+
+            # CASCADE GA handling
             run_id  = generate_run_id()
             run_dir = create_run_directory(run_id)
 
@@ -357,7 +466,8 @@ def run_optimization(request):
                         exec_ms, energy_mj = runSingleCascade(
                             chiplets=full_map,
                             trace=trace_name,
-                            save_to_csv=True
+                            save_to_csv=True,
+                            source='Full-Factorial'
                         )
                         design_points.append({
                             'execution_time_ms': exec_ms,
@@ -931,7 +1041,8 @@ def integrate_custom_point_to_ga(request):
         exec_ms, energy_mj = runSingleCascade(
             chiplets=chiplets,
             trace=trace,
-            save_to_csv=True   # writes to live points.csv for polling [1]
+            save_to_csv=True,   # writes to live points.csv for polling [1]
+            source='User'
         )
 
         return JsonResponse({
@@ -988,7 +1099,7 @@ def evaluate_point_inputs(request):
 
         # Evaluate the point — save_to_csv=True writes it to the
         # live points.csv so it appears on the chart immediately [1]
-        objectives = runSingleCascade(chiplets, trace, save_to_csv=True)
+        objectives = runSingleCascade(chiplets, trace, save_to_csv=True, source='User')
         
         print("Objectives returned from runSingleCascade:", objectives)
         
@@ -1041,7 +1152,7 @@ def evaluate_point(request):
             "Convolution": chiplets.get("Convolution", 0),
         }
 
-        objectives = runSingleCascade(full_chiplets, trace, save_to_csv=True)
+        objectives = runSingleCascade(full_chiplets, trace, save_to_csv=True, source='User')
         
         evaluated_point = {
             "x":         objectives[0],

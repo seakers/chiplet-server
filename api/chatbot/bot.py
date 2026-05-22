@@ -21,8 +21,12 @@ from .agents import (
     OptimizationAgent,
     EnergyAnalysisAgent,
     RuntimeAnalysisAgent,
-    PointInfoAgent
+    PointInfoAgent,
+    EvaluationAgent,
+    HighlightingAgent
 )
+from .agents.memory import ConversationMemory
+from .agents.preprocessor import QueryPreprocessor
 
 dotenv.load_dotenv()
 
@@ -38,7 +42,7 @@ class ChatBot:
     def __init__(self, 
                  evaluator: str = 'cascade', 
                  run_id: str = None,
-                 model: str = "gpt-4o-mini",
+                 model: str = "gpt-5.4-mini",
                  specs: List[Dict[str, str]] = None):
         """
         Initialize the ChatBot.
@@ -57,6 +61,7 @@ class ChatBot:
         
         # Initialize message history with system specs
         self._specs = specs or self._get_default_specs()
+        self.memory = ConversationMemory(max_short_term=20)
         self.messages = self._specs.copy()
         
         # Context tracking
@@ -66,6 +71,8 @@ class ChatBot:
         
         # Initialize agents
         self._init_agents()
+        self.preprocessor = QueryPreprocessor()
+        self.last_agent_results = []
     
     def _get_default_specs(self) -> List[Dict[str, str]]:
         """Get default system specifications."""
@@ -85,7 +92,129 @@ class ChatBot:
             'energy_analysis_agent': EnergyAnalysisAgent(self.evaluator, self.run_id),
             'runtime_analysis_agent': RuntimeAnalysisAgent(self.evaluator, self.run_id),
             'point_info_agent': PointInfoAgent(self.evaluator, self.run_id),
+            'evaluation_agent': EvaluationAgent(self.evaluator, self.run_id),
+            'highlighting_agent': HighlightingAgent(self.evaluator, self.run_id),
         }
+
+    def _handle_tool_calls(self, message) -> str:
+        """
+        Handle OpenAI tool call responses by routing to the appropriate agent.
+        
+        Args:
+            message: The OpenAI assistant message containing tool_calls.
+            
+        Returns:
+            Final response string after all tool calls are resolved.
+        """
+        import json
+
+        # Append the assistant message (with tool_calls) to history
+        self.messages.append(message)
+
+        # Build shared context for all agents
+        agent_context = self._build_agent_context()
+
+        # Agents that should NEVER be served from cache (results depend on query parameters)
+        NO_CACHE_AGENTS = {'highlighting_agent', 'evaluation_agent'}
+
+        for tool_call in message.tool_calls:
+            agent_name = tool_call.function.name
+
+            # Skip cache for highlighting and other stateful agents
+            if agent_name not in NO_CACHE_AGENTS:
+                cached = self.memory.get_cached_result(agent_name)
+                if cached:
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": cached.message
+                    })
+                    continue
+            
+            # Safely parse arguments
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+
+            # Merge tool-call arguments into agent context
+            merged_context = {**agent_context, **arguments}
+
+            # Route to the correct agent
+            agent = self.agents.get(agent_name)
+            if agent:
+                try:
+                    result = agent.safe_execute(merged_context)
+                    if result.success:
+                        tool_result = result.message
+                    else:
+                        tool_result = (
+                            f"Agent '{agent_name}' failed: "
+                            f"{result.error or result.message}"
+                        )
+                except Exception as e:
+                    tool_result = f"Agent '{agent_name}' raised an exception: {str(e)}"
+                    
+                self.memory.cache_agent_result(agent_name, result)
+                self.last_agent_results.append((agent_name, result))
+            else:
+                tool_result = f"Unknown agent: '{agent_name}'. Available agents: {list(self.agents.keys())}"
+
+            # Append tool result in the format OpenAI expects
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": tool_result
+            })
+
+        # Get the final response from the model after all tool calls
+        final_completion = self._client.chat.completions.create(
+            model=self._model,
+            messages=self.messages,
+            tools=self._build_tools(),
+            tool_choice="auto"   # Allow chained tool calls if needed
+        )
+
+        final_message = final_completion.choices[0].message
+
+        # Handle recursive tool calls (e.g. model calls another tool)
+        if final_message.tool_calls:
+            return self._handle_tool_calls(final_message)
+
+        # Append and return the final text response
+        self.memory.add_message("assistant", final_message.content)
+        self.messages.append({"role": "assistant", "content": final_message.content})
+        return final_message.content
+
+
+    def _build_agent_context(self) -> dict:
+        """
+        Build the shared context dictionary passed to all agents.
+        Centralizes context construction used across tool calls.
+        """
+        return {
+            'points':        self._load_current_points(),
+            'point_context': self.point_context,
+            'full_data':     self.full_data,
+        }
+
+
+    def _build_tools(self) -> list:
+        """
+        Convert registered agents into OpenAI tool definitions.
+        Required by _handle_tool_calls for follow-up completions.
+        """
+        tools = []
+        for agent_name, agent in self.agents.items():
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": agent_name,
+                    "description": agent.description,
+                    "parameters": agent.get_parameters_schema()
+                }
+            })
+        return tools
     
     def get_response(self, 
                      query: str, 
@@ -109,85 +238,33 @@ class ChatBot:
         Returns:
             Assistant's response string.
         """
+        preprocessed = self.preprocessor.preprocess(query)
+        query = preprocessed["cleaned"]
+
         # Add user message to history
+        self.memory.add_message(role, query)
         self.messages.append({"role": role, "content": query})
-        
-        # Handle retrieval-augmented generation if requested
+
         if use_retrieval:
             return self._handle_retrieval_response(query, role, filters, top_k)
-        
-        # Get initial response from model
+
         completion = self._client.chat.completions.create(
             model=self._model,
-            messages=self.messages
+            messages=self.messages,
+            tools=self._build_tools(),
+            tool_choice="auto"
         )
-        content = completion.choices[0].message.content
-        
-        # Process agent calls
-        content = self._process_agent_calls(content, query)
-        
-        # Add final response to history
-        self.messages.append({"role": "assistant", "content": content})
-        
-        return content
-    
-    def _process_agent_calls(self, content: str, original_query: str) -> str:
-        """
-        Detect and process sub-agent calls in the response.
-        
-        This consolidates the agent detection logic from model.py [2].
-        """
-        # Build context for agents
-        agent_context = {
-            'query': original_query,
-            'points': self._load_current_points(),
-            'point_context': self.point_context,
-            'full_data': self.full_data,
-        }
-        
-        response_complete = False
-        max_iterations = 5  # Prevent infinite loops
-        iteration = 0
-        
-        while not response_complete and iteration < max_iterations:
-            response_complete = True
-            iteration += 1
-            
-            for agent_name, agent in self.agents.items():
-                # Check for agent call patterns
-                call_patterns = [
-                    f"CALL:{agent_name}",
-                    f"CALL:<{agent_name}>",
-                ]
-                
-                if any(pattern in content for pattern in call_patterns) or \
-                   ("CALL" in content and agent_name in content):
-                    
-                    response_complete = False
-                    print(f"Detected sub-agent call: {agent_name}")
-                    
-                    try:
-                        result = agent.execute(agent_context)
-                        
-                        if result.success:
-                            agent_msg = f"[{agent_name}] {result.message}"
-                        else:
-                            agent_msg = f"[{agent_name}] Error: {result.error}"
-                            
-                    except Exception as e:
-                        agent_msg = f"[{agent_name}] Error during execution: {e}"
-                    
-                    # Add agent response and get next model response
-                    self.messages.append({"role": "assistant", "content": agent_msg})
-                    
-                    completion = self._client.chat.completions.create(
-                        model=self._model,
-                        messages=self.messages
-                    )
-                    content = completion.choices[0].message.content
-                    break  # Restart loop to check for more agent calls
-        
-        return content
+
+        message = completion.choices[0].message
+
+        # Route to tool handler if tools were called
+        if message.tool_calls:
+            return self._handle_tool_calls(message)
+
+        # Plain text response — no tools invoked
+        self.memory.add_message("assistant", message.content)
+        self.messages.append({"role": "assistant", "content": message.content})
+        return message.content
     
     def _load_current_points(self) -> List[Dict[str, Any]]:
         """Load current points data."""
@@ -407,9 +484,20 @@ class ChatBot:
         result = self.agents['runtime_analysis_agent'].execute(context)
         return result.message
     
+    def run_full_analysis(self) -> list:
+        """Run all analysis agents in sequence, passing results forward."""
+        from .agents.memory import AgentPipeline
+        pipeline = AgentPipeline([
+            self.agents['dcorr_agent'],
+            self.agents['rule_mining_agent'],
+            self.agents['energy_analysis_agent'],
+            self.agents['runtime_analysis_agent'],
+        ])
+        return pipeline.execute(self._build_agent_context())
+
     def clear_history(self):
-        """Clear conversation history and reset context."""
         self.messages = self._specs.copy()
+        self.memory = ConversationMemory()   # Add this line
         self.point_context = None
         self.point_in_active_context = False
         self.full_data = []

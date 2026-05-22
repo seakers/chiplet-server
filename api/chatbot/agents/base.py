@@ -4,6 +4,28 @@ Base agent interface for ChatBot sub-agents.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
+import time
+from functools import wraps
+
+
+def retry_on_failure(max_retries=3, backoff_factor=2):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    result = func(*args, **kwargs)
+                    if result.success:
+                        return result
+                    if attempt < max_retries - 1:
+                        time.sleep(backoff_factor ** attempt)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(backoff_factor ** attempt)
+            return result
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -64,6 +86,14 @@ class BaseAgent(ABC):
         Default implementation checks for agent name in query.
         """
         return self.name.lower() in query.lower()
+    
+    def safe_execute(self, context: Dict[str, Any]) -> AgentResult:
+        """Execute with automatic retry and exponential backoff."""
+        return retry_on_failure(max_retries=3)(self.execute)(context)
+    
+    def get_parameters_schema(self) -> dict:
+        """Override in subclasses to expose typed parameters to the LLM."""
+        return {"type": "object", "properties": {}, "required": []}
 
 
 class AgentContext:

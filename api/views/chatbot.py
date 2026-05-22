@@ -12,15 +12,24 @@ from api.chatbot.bot import ChatBot
 from api.config.prompts import FollowUpSuggestions
 
 
-# Global chatbot instance (maintains conversation history)
 chat_bot = None
-
+_current_evaluator = None
+_current_run_id = None
 
 def get_chatbot(evaluator: str = 'cascade', run_id: str = None) -> ChatBot:
-    """Get or create the global chatbot instance."""
-    global chat_bot
-    if chat_bot is None:
-        chat_bot = ChatBot(evaluator=evaluator, run_id=run_id)
+    global chat_bot, _current_evaluator, _current_run_id
+    
+    evaluator_normalized = evaluator.lower()
+    
+    # Recreate if evaluator or run_id has changed
+    if (chat_bot is None or 
+        _current_evaluator != evaluator_normalized or 
+        _current_run_id != run_id):
+        
+        chat_bot = ChatBot(evaluator=evaluator_normalized, run_id=run_id)
+        _current_evaluator = evaluator_normalized
+        _current_run_id = run_id
+    
     return chat_bot
 
 
@@ -30,6 +39,7 @@ def chat(request):
     Handle chat messages from the user.
     Refactored from views.py <source_id data="1" title="views.py" />.
     """
+    print("Received chat request")
     try:
         data = json.loads(request.body)
         message = data.get("message")
@@ -54,13 +64,43 @@ def chat(request):
                 "citations": response.get("citations", [])
             })
         
-        return Response({"response": response})
+        # Build frontend actions from agent results
+        frontend_actions = []
+        for agent_name, result in getattr(bot, 'last_agent_results', []):
+            if not result.success:
+                continue
+            if agent_name == 'dcorr_agent':
+                frontend_actions.append({
+                    'type': 'update_distance_correlation',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'rule_mining_agent':
+                frontend_actions.append({
+                    'type': 'update_rule_mining',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'highlighting_agent':
+                frontend_actions.append({
+                    'type': 'highlight_points',
+                    'data': result.data or {}
+                })
+        bot.last_agent_results = []  # Clear after reading
+        print(f"Frontend actions: {frontend_actions}")
+        
+        return Response({
+            "response": response,
+            "frontend_actions": frontend_actions
+        })
         
     except Exception as e:
         print(f"Error in chat: {e}")
         import traceback
         traceback.print_exc()
         return Response({"error": str(e)}, status=500)
+    
+    finally:
+        if bot:
+            bot.last_agent_results = []
 
 
 @api_view(["POST"])
@@ -228,27 +268,36 @@ def clear_chat_history(request):
 
 @api_view(["GET"])
 def add_info(request):
-    """
-    Add chiplet design point context to chatbot.
-    Mirrors add_info from views.py [1].
-    """
-    gpu   = request.GET.get("gpu", "0")
-    attn  = request.GET.get("attn", "0")
-    sparse = request.GET.get("sparse", "0")
-    conv  = request.GET.get("conv", "0")
-    
-    chiplet_file_path = (
-        f"api/Evaluator/cascade/chiplet_model/dse/results/"
-        f"pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
-    )
-    
+    model = request.GET.get("model", "CASCADE")
     bot = get_chatbot()
+
+    if model == "PISTIL":
+        # Build context from Pistil parameters
+        num_cus = request.GET.get("num_cus", "0")
+        num_tmacs = request.GET.get("num_tmacs", "0")
+        mem_buf_cap = request.GET.get("mem_buf_cap", "0")
+        batch_size = request.GET.get("batch_size", "0")
+        # ... other Pistil params ...
+        
+        chiplet_file_path = (
+            f"api/Evaluator/pistil/results/"
+            f"pointContext/{num_cus}cus_{num_tmacs}tmacs_{mem_buf_cap}membuf_{batch_size}batch.json"
+        )
+    else:
+        gpu    = request.GET.get("gpu", "0")
+        attn   = request.GET.get("attn", "0")
+        sparse = request.GET.get("sparse", "0")
+        conv   = request.GET.get("conv", "0")
+        chiplet_file_path = (
+            f"api/Evaluator/cascade/chiplet_model/dse/results/"
+            f"pointContext/{gpu}gpu{attn}attn{sparse}sparse{conv}conv.json"
+        )
+
     bot.add_information(chiplet_file_path)
     bot.messages.append({
         "role": "assistant",
         "content": "I have received context on this design! I am ready to answer questions about it."
     })
-    
     return Response({"message": "Information added successfully."})
 
 
@@ -258,34 +307,81 @@ def get_chat_response(request):
     GET-based chat endpoint (legacy compatibility).
     Mirrors get_chat_response from views.py [1].
     """
-    content  = request.GET.get("content")
-    role     = request.GET.get("role", "user")
+    content   = request.GET.get("content")
+    role      = request.GET.get("role", "user")
     evaluator = request.GET.get("evaluator", "cascade")
-    run_id   = request.GET.get("run_id", None)
-    
+    run_id    = request.GET.get("run_id", None)
+    use_retrieval = request.GET.get("use_retrieval", "false").lower() in ("1", "true", "yes")
+
     if not content:
         return Response({"error": "content is required"}, status=400)
-    
+
     bot = get_chatbot(evaluator, run_id)
-    
+
     try:
+        # Collect optional filters
         filters = {}
         for key in ["trace", "doc_type"]:
             val = request.GET.get(key)
             if val:
                 filters[key] = val
-        
-        rag_result = bot.get_response(content, role, use_retrieval=True, filters=filters or None)
-        if isinstance(rag_result, dict) and rag_result.get("final_answer"):
+
+        # Try retrieval-enabled response first if requested
+        if use_retrieval:
+            try:
+                rag_result = bot.get_response(query=content, role=role, use_retrieval=True, filters=filters or None)
+                if isinstance(rag_result, dict) and rag_result.get("final_answer"):
+                    return Response({
+                        "response": rag_result["final_answer"],
+                        "citations": rag_result.get("citations", [])
+                    })
+            except Exception:
+                # fall through to non-retrieval
+                pass
+
+        # Non-retrieval / standard conversational response
+        response = bot.get_response(query=content, role=role, use_retrieval=False)
+
+        # If bot returned a retrieval-like dict, handle it
+        if isinstance(response, dict):
             return Response({
-                "response": rag_result["final_answer"],
-                "citations": rag_result.get("citations", [])
+                "response": response.get("final_answer", ""),
+                "citations": response.get("citations", [])
             })
-    except Exception:
-        pass
+
+        # Build frontend actions from last agent results (if any)
+        frontend_actions = []
+        for agent_name, result in getattr(bot, 'last_agent_results', []):
+            if not result.success:
+                continue
+            if agent_name == 'dcorr_agent':
+                frontend_actions.append({
+                    'type': 'update_distance_correlation',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'rule_mining_agent':
+                frontend_actions.append({
+                    'type': 'update_rule_mining',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'highlighting_agent':
+                frontend_actions.append({
+                    'type': 'highlight_points',
+                    'data': result.data or {}
+                })
+        bot.last_agent_results = []
+
+        return Response({"response": response, "frontend_actions": frontend_actions})
+
+    except Exception as e:
+        print(f"Error in get_chat_response: {e}")
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
     
-    response = bot.get_response(content, role)
-    return Response({"response": response})
+    finally:
+        if bot:
+            bot.last_agent_results = []
 
 
 @api_view(["GET"])

@@ -12,6 +12,7 @@ api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/
 api/Evaluator/sim-v2-4-pistil-sim-clean/configs/gen_configs/
 api/Evaluator/sim-v2-4-pistil-sim-clean/trace-results
 api/Evaluator/sim-v2-4-pistil-sim-clean/traces/
+comparison_results/
 
 # macOS
 .DS_Store

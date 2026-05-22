@@ -23,7 +23,15 @@ class OptimizationAgent(BaseAgent):
     
     @property
     def description(self) -> str:
-        return "Starts optimization runs based on user specifications."
+        return (
+            "Starts optimization runs. REQUIRED parameters: model (CASCADE or PISTIL), "
+            "algorithm (Genetic Algorithm, Full-Factorial, or Deep RL), and at least one trace/model name. "
+            "If the user has NOT provided all required parameters, DO NOT call this tool. "
+            "Instead, respond with a message asking the user for the missing information. "
+            "For CASCADE: need trace name(s) and weights. "
+            "For PISTIL: need pistil model name (e.g., llama3-8b). "
+            "Optional: population_size (default 50), generations (default 100)."
+        )
     
     def execute(self, context: Dict[str, Any]) -> AgentResult:
         """

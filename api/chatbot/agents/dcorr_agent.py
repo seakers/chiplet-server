@@ -66,6 +66,19 @@ class DistanceCorrelationAgent(BaseAgent):
                 message=f"Error during distance correlation analysis: {str(e)}",
                 error=str(e)
             )
+        
+    def get_parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "metric_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Objective metric names to analyze"
+                }
+            },
+            "required": []
+        }
     
     def _format_correlation_message(self, results: Dict[str, Any]) -> str:
         """Format correlation results as a human-readable message."""

@@ -84,6 +84,29 @@ class PointInfoAgent(BaseAgent):
                 message=f"Error retrieving point info: {str(e)}",
                 error=str(e)
             )
+        
+    def get_parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "param": {
+                    "type": "string",
+                    "enum": ["energy", "exe_time", "flops", "mem_accessed"],
+                    "description": "The parameter to retrieve"
+                },
+                "min_max": {
+                    "type": "string",
+                    "enum": ["min", "max"],
+                    "description": "Whether to retrieve min or max values"
+                },
+                "num_points": {
+                    "type": "integer",
+                    "description": "How many points to return",
+                    "default": 5
+                }
+            },
+            "required": []
+        }
     
     def _parse_data_request(self, query: str) -> Optional[Dict[str, Any]]:
         """

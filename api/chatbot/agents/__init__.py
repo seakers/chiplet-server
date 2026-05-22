@@ -6,3 +6,5 @@ from .optimization_agent import OptimizationAgent
 from .energy_analysis_agent import EnergyAnalysisAgent
 from .runtime_analysis_agent import RuntimeAnalysisAgent
 from .point_info_agent import PointInfoAgent
+from .evaluation_agent import EvaluationAgent
+from .highlighting_agent import HighlightingAgent

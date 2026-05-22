@@ -81,6 +81,7 @@ class RuleMiningAgent(BaseAgent):
             )
             
         except Exception as e:
+            print(f"Error during rule mining: {str(e)}")
             return AgentResult(
                 success=False,
                 message=f"Error during rule mining: {str(e)}",

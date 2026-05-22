@@ -13,6 +13,13 @@ from api.config.evaluators import get_evaluator_config, EvaluatorConfig
 from .models import DesignPoint, ParetoFront, RunStatistics
 
 
+def _is_numeric(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
 class CSVLoader:
     """Generic CSV loader with deduplication support."""
     
@@ -100,7 +107,6 @@ class PointsLoader:
         return points
     
     def load_points_as_dicts(self, file_path: str = None,
-                             algorithm: str = '',
                              trace: str = '') -> List[Dict[str, Any]]:
         """
         Load design points and return as list of dictionaries.
@@ -130,7 +136,7 @@ class PointsLoader:
                         'attn': int(float(row[3])),
                         'sparse': int(float(row[4])),
                         'conv': int(float(row[5])),
-                        'algorithm': algorithm,
+                        'algorithm': row[6].strip() if len(row) > 6 else 'Genetic Algorithm',
                         'trace': trace,
                     })
                 elif self.evaluator == 'pistil':
@@ -146,7 +152,7 @@ class PointsLoader:
                         'mem_frac_bank_cap': float(row[6]),
                         'batch_size': int(float(row[7])),
                         'kv_cache': int(float(row[8])),
-                        'algorithm': algorithm,
+                        'algorithm': row[-1].strip() if len(row) > 11 and not _is_numeric(row[-1]) else 'Genetic Algorithm',
                         'trace': trace,
                     })
         
@@ -198,9 +204,10 @@ class PointsLoader:
                 # Skip header for PISTIL
                 if self.evaluator == "pistil" and row[0] == "num_cus":
                     continue
-                numeric_row = [float(val) for val in row]
+                numeric_row = [float(val) for val in row if _is_numeric(val)]
                 full_data_list.append(numeric_row)
-        
+
+
         if not full_data_list:
             return np.array([])
         
@@ -208,6 +215,7 @@ class PointsLoader:
         full_data = np.array(full_data_list)
         total_cols = self.config.num_objectives + len(self.config.decision_columns)
         full_data = full_data[:, :total_cols]
+
         
         # Deduplicate
         full_data = np.array(list(set(tuple(row) for row in full_data)))

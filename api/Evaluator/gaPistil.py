@@ -241,6 +241,15 @@ class PistilProblem(ElementwiseProblem):
         print(f"  [Note: Simulation may take several minutes. Pistil is running...]")
 
         try:
+            # Pre-flight check: decode-only mode with prefill_cached=0 and
+            # kv_cache equal to max_seq can trigger seq_len=0 in kv_cache.write_kv.
+            # Force prefill_cached to 1 in this edge case to avoid the crash.
+            if (params.get("prefill") == "False"
+                    and int(params.get("prefill_cached", 0)) == 0
+                    and int(params.get("kv_cache", 0)) > 0):
+                params = dict(params)  # don't mutate the original
+                params["prefill_cached"] = 1
+                print(f"[PISTIL GA] Pre-flight: set prefill_cached=1 to avoid seq_len=0 crash")
             self.sim.run_dse_point(params)
             eval_elapsed = time_module.time() - eval_start_time
             print(f"  [Simulation completed in {eval_elapsed:.1f} seconds]")
@@ -446,7 +455,7 @@ class PistilProblem(ElementwiseProblem):
         if not os.path.exists(self.points_csv_path) or os.path.getsize(self.points_csv_path) == 0:
             with open(self.points_csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                header = decision_cols + metric_cols
+                header = decision_cols + metric_cols + ['algorithm']
                 writer.writerow(header)
             self.points_csv_initialized = True
             print(f"Initialized points.csv at {self.points_csv_path}")
@@ -513,6 +522,7 @@ class PistilProblem(ElementwiseProblem):
         # Add metrics
         for col in metric_cols:
             row_data.append(metrics_dict.get(col, 0.0))
+        row_data.append(getattr(self, 'algorithm_label', 'Genetic Algorithm'))
         
         # Append row
         try:
@@ -568,6 +578,10 @@ def runGAPistil(
         os.makedirs(output_dir, exist_ok=True)
         print(f"[PISTIL GA] Using provided output directory: {output_dir}")
 
+    points_file = os.path.join(output_dir, "points.csv")
+    with open(points_file, 'w') as f:
+        pass  # Truncate / reset the file
+
     problem = PistilProblem(
         model_name=model_name,
         allowed_num_cus=allowed_num_cus,
@@ -575,6 +589,7 @@ def runGAPistil(
         kv_cache_bounds=kv_cache_bounds,
         output_dir=output_dir,
     )
+    problem.algorithm_label = 'Genetic Algorithm'
 
     # points.csv will be initialized with header on first evaluation by PistilProblem
 
@@ -635,48 +650,6 @@ def runGAPistil(
     
     # Reset evaluation counter
     problem._eval_count = 0
-    
-    # Create callback to track generation progress
-    class GenerationCallback(Callback):
-        def __init__(self, problem_instance, total_gens, pop_size):
-            super().__init__()
-            self.problem = problem_instance
-            self.total_gens = total_gens
-            self.pop_size = pop_size
-            
-        def _count_csv_points(self):
-            """Count points in CSV file (excluding header)"""
-            if not os.path.exists(self.problem.points_csv_path):
-                return 0
-            try:
-                with open(self.problem.points_csv_path, 'r') as f:
-                    return sum(1 for line in f) - 1  # Subtract header
-            except:
-                return 0
-            
-        def update(self, algorithm):
-            """Called after each generation"""
-            current_gen = algorithm.n_gen
-            # Get evaluation count from algorithm's evaluator (more accurate than problem._eval_count)
-            try:
-                if hasattr(algorithm, 'evaluator') and hasattr(algorithm.evaluator, 'n_eval'):
-                    current_eval = algorithm.evaluator.n_eval
-                else:
-                    current_eval = getattr(self.problem, '_eval_count', 0)
-            except:
-                current_eval = getattr(self.problem, '_eval_count', 0)
-            
-            csv_points = self._count_csv_points()
-            progress_pct = (current_gen / self.total_gens) * 100
-            
-            print(f"\n[PISTIL GA] {'='*60}")
-            print(f"[PISTIL GA] Generation {current_gen}/{self.total_gens} completed ({progress_pct:.1f}%)")
-            print(f"  Total evaluations attempted: {current_eval}/{self.pop_size * self.total_gens}")
-            print(f"  Points successfully saved to CSV: {csv_points}")
-            if current_eval > csv_points:
-                failed_count = current_eval - csv_points
-                print(f"  ⚠️  {failed_count} evaluation(s) failed (errors occurred)")
-            print(f"[PISTIL GA] {'='*60}")
     
     # Sampling: either use provided initial_population or fall back to random
     if initial_population is not None:
