@@ -45,32 +45,46 @@ class PointInfoAgent(BaseAgent):
             query = context.get('query', '')
             point_context = context.get('point_context')
             full_data = context.get('full_data', [])
+            evaluator = context.get('evaluator')
             
-            if point_context is None or len(full_data) == 0:
+            if point_context is None or (len(full_data) == 0 and evaluator.lower() == "cascade"):
+                print("C")
                 return AgentResult(
                     success=False,
                     message="No design point context available. Please select a design point first.",
                     error="No point context"
                 )
             
-            # Parse the query to determine what data to retrieve
-            parsed = self._parse_data_request(query)
-            
-            if parsed is None:
-                return AgentResult(
-                    success=False,
-                    message="Could not understand the data request. Please specify parameter (flops, mem_accessed, exe_time, energy), min/max, and number of points.",
-                    error="Parse error"
+            if evaluator.lower() == "cascade":
+                print("B")
+                # Parse the query to determine what data to retrieve
+                parsed = self._parse_data_request(query)
+                
+                if parsed is None:
+                    return AgentResult(
+                        success=False,
+                        message="Could not understand the data request. Please specify parameter (flops, mem_accessed, exe_time, energy), min/max, and number of points.",
+                        error="Parse error"
+                    )
+                
+                # For CASCADE, point_context is a numpy array and full_data is a list of dicts
+                result = self._retrieve_point_data(
+                    point_context,
+                    full_data,
+                    parsed['min_max'],
+                    parsed['param'],
+                    parsed['num_points']
                 )
-            
-            # Retrieve the requested data
-            result = self._retrieve_point_data(
-                point_context,
-                full_data,
-                parsed['min_max'],
-                parsed['param'],
-                parsed['num_points']
-            )
+
+            elif evaluator.lower() == "pistil":
+                print("A")
+                # point_context for PISTIL is a list of strings; join with newlines
+                if isinstance(point_context, (list, tuple)):
+                    result = "\n".join(str(x) for x in point_context)
+                else:
+                    result = str(point_context)
+
+                parsed = None
             
             return AgentResult(
                 success=True,
@@ -79,6 +93,7 @@ class PointInfoAgent(BaseAgent):
             )
             
         except Exception as e:
+            print(f"Error in PointInfoAgent: {str(e)}")
             return AgentResult(
                 success=False,
                 message=f"Error retrieving point info: {str(e)}",

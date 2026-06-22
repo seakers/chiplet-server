@@ -16,45 +16,52 @@ chat_bot = None
 _current_evaluator = None
 _current_run_id = None
 
-def get_chatbot(evaluator: str = 'cascade', run_id: str = None) -> ChatBot:
+def get_chatbot(evaluator: str = 'cascade', run_id: str = None, force_new: bool = False) -> ChatBot:
     global chat_bot, _current_evaluator, _current_run_id
-    
+
     evaluator_normalized = evaluator.lower()
-    
-    # Recreate if evaluator or run_id has changed
-    if (chat_bot is None or 
-        _current_evaluator != evaluator_normalized or 
-        _current_run_id != run_id):
-        
+
+    # Only recreate if explicitly forced, or if evaluator changes
+    # Do NOT recreate just because run_id changed — that would wipe point context
+    evaluator_changed = (_current_evaluator != evaluator_normalized)
+    run_changed = (_current_run_id != run_id) and (run_id is not None)
+
+    if force_new or chat_bot is None or evaluator_changed:
         chat_bot = ChatBot(evaluator=evaluator_normalized, run_id=run_id)
         _current_evaluator = evaluator_normalized
         _current_run_id = run_id
-    
+        print(f"[get_chatbot] Created new bot (force={force_new}, evaluator_changed={evaluator_changed})")
+    elif run_changed:
+        # Run changed but same evaluator — update run_id without wiping context
+        chat_bot.run_id = run_id
+        _current_run_id = run_id
+        print(f"[get_chatbot] Updated run_id to {run_id} without reinitializing bot")
+    else:
+        print(f"[get_chatbot] Reusing existing bot with context intact")
+
     return chat_bot
 
 
 @api_view(["POST"])
 def chat(request):
-    """
-    Handle chat messages from the user.
-    Refactored from views.py <source_id data="1" title="views.py" />.
-    """
-    print("Received chat request")
+    bot = None
     try:
-        data = json.loads(request.body)
-        message = data.get("message")
-        evaluator = data.get("evaluator", "cascade")
-        run_id = data.get("run_id")
-        use_retrieval = data.get("use_retrieval", False)
-        
-        if not message:
-            return Response({"error": "message is required"}, status=400)
-        
+        data = json.loads(request.body) if request.body else {}
+        evaluator = data.get("evaluator") or request.GET.get("evaluator", "cascade")
+        run_id    = data.get("run_id")    or request.GET.get("run_id")
+        objectives= data.get("objectives") or request.GET.get("objectives")
+
         bot = get_chatbot(evaluator, run_id)
+
+        if objectives:
+            bot.set_objectives(objectives)
+
+        role    = data.get("role", "user")
+        content = data.get("content", "")
         
         response = bot.get_response(
-            query=message,
-            use_retrieval=use_retrieval
+            query=content,
+            use_retrieval=False
         )
         
         # Handle retrieval response format
@@ -144,21 +151,24 @@ def data_mining_followup(request):
 
 @api_view(["POST"])
 def add_run_context(request):
-    """
-    Add optimization run context to the chatbot.
-    Refactored from views.py <source_id data="1" title="views.py" />.
-    """
     try:
         data = json.loads(request.body)
         summary_text = data.get("summary_text")
         analytics_text = data.get("analytics_text")
         is_comparative = data.get("is_comparative", False)
-        
+        objectives = data.get("objectives")
+        evaluator = data.get("evaluator", "cascade")
+        run_id = data.get("run_id", None)
+
         if not summary_text:
             return Response({"error": "summary_text is required"}, status=400)
-        
-        bot = get_chatbot()
-        
+
+        # Force new bot for a new run — intentional context wipe
+        bot = get_chatbot(evaluator=evaluator, run_id=run_id, force_new=True)
+
+        if objectives:
+            bot.set_objectives(objectives)
+
         # Choose appropriate suggestions based on run type
         suggestions = (
             FollowUpSuggestions.COMPARATIVE_RUN 
@@ -255,12 +265,11 @@ def add_enhanced_insights_context(request):
 
 @api_view(["POST"])
 def clear_chat_history(request):
-    """
-    Clear the chatbot conversation history.
-    """
     try:
-        bot = get_chatbot()
-        bot.clear_history()
+        evaluator = request.data.get("evaluator", "cascade")
+        run_id = request.data.get("run_id", None)
+        # Force a brand new bot — this is the one place we WANT to wipe context
+        bot = get_chatbot(evaluator=evaluator, run_id=run_id, force_new=True)
         return Response({"message": "Chat history cleared"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
@@ -269,20 +278,36 @@ def clear_chat_history(request):
 @api_view(["GET"])
 def add_info(request):
     model = request.GET.get("model", "CASCADE")
-    bot = get_chatbot()
+    bot = get_chatbot(evaluator=model.lower())
 
     if model == "PISTIL":
-        # Build context from Pistil parameters
         num_cus = request.GET.get("num_cus", "0")
         num_tmacs = request.GET.get("num_tmacs", "0")
         mem_buf_cap = request.GET.get("mem_buf_cap", "0")
+        net_buf_cap = request.GET.get("net_buf_cap", "0")
+        mem_banks_per_group = request.GET.get("mem_banks_per_group", "0")
+        mem_ranks = request.GET.get("mem_ranks", "0")
+        mem_frac_bank_cap = request.GET.get("mem_frac_bank_cap", "0")
         batch_size = request.GET.get("batch_size", "0")
-        # ... other Pistil params ...
-        
-        chiplet_file_path = (
-            f"api/Evaluator/pistil/results/"
-            f"pointContext/{num_cus}cus_{num_tmacs}tmacs_{mem_buf_cap}membuf_{batch_size}batch.json"
-        )
+        kv_cache = request.GET.get("kv_cache", "0")
+
+        # Helper: ensures 1 -> "1.0", 0.25 -> "0.25", 2 -> "2.0"
+        def fmt(val):
+            n = float(val)
+            return f"{n:.1f}" if n == int(n) else str(n)
+
+        chiplet_file_path = [(
+            f"api/Evaluator/sim-v2-4-pistil-sim-clean/trace-results/"
+            f"llama3-8b-chiplets-{num_cus}-r-{mem_ranks}-bg-{mem_banks_per_group}-"
+            f"f-{fmt(mem_frac_bank_cap)}-bs-{batch_size}-kv-{kv_cache}-occ-{float(mem_buf_cap):.2f}.csv"
+        ),
+        (
+            f"api/Evaluator/sim-v2-4-pistil-sim-clean/configs/gen_configs/"
+            f"pistil-config-num_cus-{num_cus}-tmacs-{num_tmacs}-mem_buf_cap-{fmt(mem_buf_cap)}-"
+            f"net_buf_cap-{fmt(net_buf_cap)}-mem_bank_groups-{mem_banks_per_group}-mem_ranks-{mem_ranks}-"
+            f"mem_frac_bank_cap-{fmt(mem_frac_bank_cap)}.json"
+        )]
+        print(f"Constructed Pistil chiplet file paths: {chiplet_file_path}")
     else:
         gpu    = request.GET.get("gpu", "0")
         attn   = request.GET.get("attn", "0")
@@ -312,11 +337,21 @@ def get_chat_response(request):
     evaluator = request.GET.get("evaluator", "cascade")
     run_id    = request.GET.get("run_id", None)
     use_retrieval = request.GET.get("use_retrieval", "false").lower() in ("1", "true", "yes")
+    # Support objectives passed as either a single param or as an array (objectives[])
+    # e.g. ?objectives=foo or ?objectives[]=a&objectives[]=b
+    if "objectives[]" in request.GET:
+        objectives = request.GET.getlist("objectives[]")
+    else:
+        # getlist will return [] for missing keys, so try both
+        objectives = request.GET.getlist("objectives") or request.GET.get("objectives")    
 
     if not content:
         return Response({"error": "content is required"}, status=400)
 
     bot = get_chatbot(evaluator, run_id)
+
+    if objectives:
+        bot.set_objectives(objectives)
 
     try:
         # Collect optional filters

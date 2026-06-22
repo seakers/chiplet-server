@@ -26,6 +26,7 @@ urlpatterns = [
     path('rule-mining-insights/',           analysis.rule_mining_insights,          name='rule_mining_insights'),
     path('distance-correlation/',           analysis.distance_correlation,          name='distance_correlation'),
     path('distance-correlation-insights/',  analysis.distance_correlation_insights, name='distance_correlation_insights'),
+    path('pdf/',                            analysis.serve_pdf,                     name='serve_pdf'),
 
     # ── Reports ───────────────────────────────────────────────────────────────
     path('generate-report/',                reports.generate_report,                name='generate_report'),

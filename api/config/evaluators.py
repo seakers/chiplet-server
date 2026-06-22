@@ -47,18 +47,14 @@ class EvaluatorConfig:
         except ValueError:
             raise ValueError(f"Unknown objective column: {col_name}")
 
+    def minimize_for(self, objective_name: str) -> bool:
+        """Return True if this objective should be minimized."""
+        maximize = {'avg_comp_util', 'avg_mem_util', 'prefill_tokens_per_sec',
+                    'system_compute_TOPS', 'system_bandwidth_TBps', 'system_capacity_GB'}
+        return objective_name not in maximize
 
-# Pre-configured evaluators
-CASCADE_CONFIG = EvaluatorConfig(
-    name='cascade',
-    decision_columns=['GPU', 'Attention', 'Sparse', 'Convolution'],
-    objective_columns=['exe_time', 'energy'],
-    num_objectives=2,
-    num_slots=12,
-    csv_has_header=False,
-    objectives_first=True,
-)
 
+# Replace PISTIL_CONFIG objective_columns with full list
 PISTIL_CONFIG = EvaluatorConfig(
     name='pistil',
     decision_columns=[
@@ -66,10 +62,25 @@ PISTIL_CONFIG = EvaluatorConfig(
         'mem_banks_per_group', 'mem_ranks', 'mem_frac_bank_cap',
         'batch_size', 'kv_cache'
     ],
-    objective_columns=['latency_ms', 'energy_mJ'],
-    num_objectives=2,
+    objective_columns=[
+        'latency_per_token_ms', 'energy_per_inference_mJ', 'energy_per_token_mJ',
+        'average_power_W', 'system_power_W', 'system_cost',
+        'avg_comp_util', 'avg_mem_util', 'prefill_tokens_per_sec',
+        'system_compute_TOPS', 'system_bandwidth_TBps', 'system_capacity_GB'
+    ],
+    num_objectives=12,  # total available; user picks ≤3
     csv_has_header=True,
-    objectives_first=False,  # PISTIL has decisions first
+    objectives_first=False,
+)
+
+CASCADE_CONFIG = EvaluatorConfig(
+    name='cascade',
+    decision_columns=['GPU', 'Attention', 'Sparse', 'Convolution'],
+    objective_columns=['exe_time', 'energy', 'energy_dram', 'mem_accessed', 'flops'],  # extend as supported
+    num_objectives=5,
+    num_slots=12,
+    csv_has_header=False,
+    objectives_first=True,
 )
 
 EVALUATOR_CONFIGS: Dict[str, EvaluatorConfig] = {
@@ -78,9 +89,11 @@ EVALUATOR_CONFIGS: Dict[str, EvaluatorConfig] = {
 }
 
 
-def get_evaluator_config(evaluator_name: str) -> EvaluatorConfig:
+def get_evaluator_config(evaluator_name: str, num_objs: int = None) -> EvaluatorConfig:
     """Get the configuration for a specific evaluator."""
     config = EVALUATOR_CONFIGS.get(evaluator_name.lower())
     if not config:
         raise ValueError(f"Unknown evaluator: {evaluator_name}. Available: {list(EVALUATOR_CONFIGS.keys())}")
+    if num_objs is not None:
+        config.num_objectives = num_objs
     return config

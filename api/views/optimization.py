@@ -83,6 +83,20 @@ def get_chart_data(request):
     run_id = request.GET.get("run_id")
     file_path = request.GET.get("file_path")
     requested_algorithm = request.GET.get("algorithm")
+    
+    from api.config.objectives import DEFAULT_OBJECTIVES, to_fields
+
+    # Read the friendly names from the query string
+    objectives_raw = request.GET.get("objectives") or ""
+    objectives = [o.strip() for o in objectives_raw.split(",") if o.strip()]
+    if not objectives:
+        objectives = DEFAULT_OBJECTIVES.get(model.lower(), [])
+
+    # Internal field names if you need them downstream
+    objective_fields = to_fields(objectives)
+
+
+    print(f"[get_chart_data] model={model}, run_id={run_id}, file_path={file_path}, requested_algorithm={requested_algorithm}, objectives={objectives}")
 
     # Determine algorithm display name from DB if possible
     algorithm_to_use = requested_algorithm or "Genetic Algorithm"
@@ -105,7 +119,8 @@ def get_chart_data(request):
         if not os.path.exists(points_csv_path):
             return Response({"data": []})
 
-        loader = PointsLoader('cascade', run_id)
+        loader = PointsLoader('cascade', run_id, num_objs=len(objectives))
+        # print("A")
         points = loader.load_points_as_dicts(points_csv_path)
 
         trace_name = request.GET.get("trace", "gpt-j-65536-weighted")
@@ -114,6 +129,8 @@ def get_chart_data(request):
                 point['algorithm'] = algorithm_to_use
             point['trace'] = trace_name
             point['model'] = 'CASCADE'
+
+        # print("C", points[:2])  # Debug: print first 2 points loaded
 
         return Response({"data": points})
 
@@ -124,6 +141,7 @@ def get_chart_data(request):
         elif run_id:
             pistil_root = Path(sys.path[0]) / "api" / "Evaluator" / "sim-v2-4-pistil-sim-clean"
             output_dir = pistil_root / "dse" / "results" / run_id
+            # print(f"[PISTIL] Looking for points.csv in {output_dir}")
             points_csv_path = str(output_dir / "points.csv")
         else:
             return Response({"data": []})
@@ -131,7 +149,7 @@ def get_chart_data(request):
         if not os.path.exists(points_csv_path):
             return Response({"data": []})
 
-        loader = PointsLoader('pistil', run_id)
+        loader = PointsLoader('pistil', run_id, num_objs=len(objectives))
         points = loader.load_points_as_dicts(points_csv_path)
 
         trace_name = request.GET.get("trace", "pistil-default")
@@ -169,6 +187,7 @@ def run_optimization(request):
         model         = data.get('model', 'CASCADE')
         objectives    = data.get('objectives', [])
         traces        = data.get('traces', [])
+        objectives    = data.get('objectives', [])
         population    = int(data.get('population_size', data.get('population', 50)))
         generations   = int(data.get('generations', 100))
 
@@ -247,6 +266,7 @@ def run_optimization(request):
                             pop_size=population,
                             n_gen=generations,
                             model_name=pistil_model,
+                            objectives=objectives,
                             output_dir=str(output_dir)
                         )
                         
@@ -258,7 +278,7 @@ def run_optimization(request):
                             RunStorageService.store_design_points(optimization_run, design_points, str(output_dir))
                         
                         # Run analytics
-                        analytics_results = _run_analytics(points_csv_path, 'pistil')
+                        analytics_results = _run_analytics(points_csv_path, 'pistil', objectives=objectives)
                         
                         RunStorageService.complete_run(
                             optimization_run,
@@ -335,6 +355,7 @@ def run_optimization(request):
                         pop_size=population,
                         n_gen=generations,
                         trace=trace_name,
+                        objectives=objectives,
                         output_dir=RESULTS_DIR
                     )
                     ga_result = convert_ndarrays(ga_result)
@@ -366,7 +387,7 @@ def run_optimization(request):
                         RunStorageService.store_design_points(optimization_run, design_points, run_dir)
 
                     # Run analytics
-                    analytics_results = _run_analytics(current_points_file, 'cascade')
+                    analytics_results = _run_analytics(current_points_file, 'cascade', objectives=objectives)
 
                     RunStorageService.complete_run(
                         optimization_run,
@@ -466,6 +487,7 @@ def run_optimization(request):
                         exec_ms, energy_mj = runSingleCascade(
                             chiplets=full_map,
                             trace=trace_name,
+                            objectives=objectives,
                             save_to_csv=True,
                             source='Full-Factorial'
                         )
@@ -518,7 +540,7 @@ def run_optimization(request):
             else:
                 # Offline / synchronous mode
                 run_full_factorial_job()
-                loader = PointsLoader('cascade')
+                loader = PointsLoader('cascade', num_objs = len(objectives))
                 points = loader.load_points_as_dicts(current_points_file)
                 return JsonResponse({
                     'status':    'success',
@@ -607,6 +629,7 @@ def run_optimization(request):
                             num_epochs=episodes,
                             mini_batch_size=mini_batch_size,
                             model_name=pistil_model or "llama3-8b",
+                            objectives=objectives,
                             output_dir=points_csv_path   # rlPistil writes live to this file
                         )
 
@@ -617,6 +640,7 @@ def run_optimization(request):
                             num_epochs=episodes,
                             mini_batch_size=mini_batch_size,
                             trace=trace_name or "gpt-j-65536-weighted",
+                            objectives=objectives
                         )
                         # Write each design point to CSV immediately so polling sees it [1]
                         for dp in design_points:
@@ -637,7 +661,7 @@ def run_optimization(request):
                             optimization_run, design_points, run_dir
                         )
 
-                    analytics_results = _run_analytics(points_csv_path, model.lower())
+                    analytics_results = _run_analytics(points_csv_path, model.lower(), objectives=objectives)
 
                 except Exception as e:
                     print(f"[Deep RL Background] Error: {e}")
@@ -782,6 +806,7 @@ def restart_run(request):
                     pop_size=pop_size,
                     n_gen=generations,
                     trace=trace_name,
+                    objectives=['Runtime', 'Energy'],
                     initial_population=initial_sampling,
                     output_dir=run_dir
                 )
@@ -900,54 +925,61 @@ def estimate_full_factorial(request):
 # Private helpers
 # ─────────────────────────────────────────────
 
-def _run_analytics(points_csv_path: str, evaluator: str) -> dict:
+def _run_analytics(points_csv_path: str, evaluator: str, objectives=None) -> dict:
     """
     Run rule mining and distance correlation after optimization completes.
-    Shared by GA, FF and Deep RL background jobs.
+    `objectives` is a list of *friendly* names (e.g. ['Energy', 'Runtime']).
     """
+    from api.chatbot.bot import ChatBot
+    from api.config.objectives import to_fields, DEFAULT_OBJECTIVES
+    from api.config.evaluators import get_evaluator_config
+    import csv
+
     analytics_results = {'rule_mining': '', 'distance_correlation': ''}
     try:
-        from api.chatbot.bot import ChatBot
         chat_bot = ChatBot(evaluator=evaluator)
+        if objectives:
+            chat_bot.set_objectives(objectives)
 
-        # Rule mining
-        rule_mining_result = chat_bot.rule_mining()
-        analytics_results['rule_mining'] = rule_mining_result
+        cfg = get_evaluator_config(evaluator)
 
-        # Distance correlation — load CSV first
+        # Resolve which objective columns/decisions to feed to dcorr
+        friendly = objectives or DEFAULT_OBJECTIVES.get(evaluator.lower(), [])
+        wanted_fields = to_fields(friendly)
+        all_obj_cols = cfg.objective_columns
+        obj_indices = [all_obj_cols.index(f) for f in wanted_fields if f in all_obj_cols]
+        if not obj_indices:
+            obj_indices = list(range(len(all_obj_cols)))
+            friendly = all_obj_cols  # fall back
+
+        # Load CSV → numeric arrays projected onto selected objectives
         objective_vals, design_vals = [], []
-        with open(points_csv_path, mode='r') as file:
-            for row in csv.reader(file):
-                # Skip PISTIL header row
-                if row and row[0].startswith('num_cus'):
+        n_obj = len(all_obj_cols)
+        with open(points_csv_path) as f:
+            for row in csv.reader(f):
+                if not row or row[0].startswith(('num_cus', 'energy', 'exe_time')):
+                    continue  # skip headers
+                try:
+                    nums = [float(x) for x in row]
+                except ValueError:
                     continue
-                if evaluator == 'pistil' and len(row) >= 11:
-                    objective_vals.append([float(row[9]), float(row[10])])
-                    design_vals.append([float(row[i]) for i in range(9)])
-                elif len(row) >= 6:
-                    objective_vals.append([float(row[0]), float(row[1])])
-                    design_vals.append([int(float(row[i])) for i in range(2, 6)])
+                if len(nums) < n_obj + len(cfg.decision_columns):
+                    continue
+                objective_vals.append([nums[i] for i in obj_indices])
+                design_vals.append(nums[n_obj : n_obj + len(cfg.decision_columns)])
 
         if objective_vals:
-            if evaluator == 'pistil':
-                from api.config.evaluators import get_evaluator_config
-                cfg = get_evaluator_config('pistil')
-                distance_corr_result = chat_bot.get_distance_correlations(
-                    objective_vals, design_vals,
-                    metric_names=cfg.objective_columns,
-                    decision_names=cfg.decision_columns
-                )
-            else:
-                distance_corr_result = chat_bot.get_distance_correlations(
-                    objective_vals, design_vals,
-                    metric_names=['exe_time', 'energy'],
-                    decision_names=['GPU', 'Attention', 'Sparse', 'Convolution']
-                )
-            analytics_results['distance_correlation'] = distance_corr_result
+            analytics_results['distance_correlation'] = chat_bot.get_distance_correlations(
+                objective_vals, design_vals,
+                metric_names=friendly,                  # human-readable
+                decision_names=cfg.decision_columns,
+            )
+
+        # Rule mining (already centralized via ChatBot.rule_mining → RuleMiningAgent)
+        analytics_results['rule_mining'] = chat_bot.rule_mining()
 
     except Exception as e:
-        print(f"[_run_analytics] Error: {e}")
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
 
     return analytics_results
 
@@ -990,7 +1022,7 @@ def update_data(request):
         if not os.path.exists(points_csv_path):
             return Response({"data": []})
         
-        loader = PointsLoader('cascade')
+        loader = PointsLoader('cascade', num_objs=2)
         points = loader.load_points_as_dicts(points_csv_path)
         
         return Response({"data": points})

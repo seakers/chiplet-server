@@ -8,6 +8,7 @@ from .base import BaseAgent, AgentResult
 from .registry import AgentRegistry
 from api.analysis.distance_correlation import DistanceCorrelationAnalyzer
 from api.data.loaders import PointsLoader
+from api.config.objectives import OBJECTIVE_FIELD_MAP
 
 
 @AgentRegistry.register
@@ -26,58 +27,56 @@ class DistanceCorrelationAgent(BaseAgent):
         return "Calculates distance correlations between design variables and performance objectives."
     
     def execute(self, context: Dict[str, Any]) -> AgentResult:
-        """
-        Execute distance correlation analysis.
-        
-        Args:
-            context: Dictionary containing points data or file path.
-            
-        Returns:
-            AgentResult with correlation analysis.
-        """
         try:
-            # Load data
             loader = PointsLoader(self.evaluator, self.run_id)
             points = context.get('points') or loader.load_points_as_dicts()
-            
+
             if not points:
                 return AgentResult(
                     success=False,
                     message="No data available for distance correlation analysis.",
                     error="No points data found"
                 )
-            
-            # Perform analysis
+
             analyzer = DistanceCorrelationAnalyzer(self.evaluator)
-            results = analyzer.analyze_from_points(points)
-            
-            # Format response message
-            message = self._format_correlation_message(results)
-            
+            objectives = context.get('objectives')   # friendly names
+
+            # Pass friendly names through; analyzer.analyze_from_points
+            # (updated in step 2) handles the field mapping itself.
+            results = analyzer.analyze_from_points(
+                points,
+                requested_objectives=objectives,
+            )
+
             return AgentResult(
                 success=True,
-                message=message,
-                data=results
+                message=self._format_correlation_message(results),
+                data=results,
             )
-            
+
         except Exception as e:
+            import traceback; traceback.print_exc()
             return AgentResult(
                 success=False,
-                message=f"Error during distance correlation analysis: {str(e)}",
-                error=str(e)
+                message=f"Error during distance correlation analysis: {e}",
+                error=str(e),
             )
         
     def get_parameters_schema(self) -> dict:
         return {
             "type": "object",
             "properties": {
-                "metric_names": {
+                "objectives": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Objective metric names to analyze"
+                    "description": (
+                        "Friendly objective names to analyze, e.g. "
+                        "['Energy', 'Runtime'] for CASCADE or "
+                        "['Latency per Token', 'Energy per Inference'] for PISTIL."
+                    ),
                 }
             },
-            "required": []
+            "required": [],
         }
     
     def _format_correlation_message(self, results: Dict[str, Any]) -> str:

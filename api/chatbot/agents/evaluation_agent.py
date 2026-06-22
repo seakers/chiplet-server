@@ -116,17 +116,35 @@ class EvaluationAgent(BaseAgent):
         if validation_error:
             return AgentResult(success=False, message=validation_error, error=validation_error)
 
-        objectives = self._run_cascade(chiplets, trace)
+        raw_objectives = self._run_cascade(chiplets, trace)
+
+        # Use flexible objectives matching the other agents [7][9]
+        from api.config.objectives import OBJECTIVE_FIELD_MAP
+        requested_objectives = context.get('objectives') or ['Energy', 'Runtime']
+
+        # CASCADE always returns [energy, runtime] — map by position then by name
+        cascade_defaults = {
+            'Energy':   raw_objectives[0],
+            'Runtime':  raw_objectives[1],
+        }
+        objective_results = {}
+        for obj_name in requested_objectives:
+            if obj_name in cascade_defaults:
+                objective_results[obj_name] = cascade_defaults[obj_name]
+            else:
+                field = OBJECTIVE_FIELD_MAP.get(obj_name)
+                objective_results[obj_name] = cascade_defaults.get(field)
 
         evaluated_point = {
-            "energy":    objectives[0],
-            "exe_time":  objectives[1],
-            "gpu":       chiplets["GPU"],
-            "attn":      chiplets["Attention"],
-            "sparse":    chiplets["Sparse"],
-            "conv":      chiplets["Convolution"],
-            "trace":     trace,
-            "algorithm": "Custom",
+            "objectives": objective_results,       # dynamic
+            "energy":     raw_objectives[0],       # kept for backward compat
+            "exe_time":   raw_objectives[1],       # kept for backward compat
+            "gpu":        chiplets["GPU"],
+            "attn":       chiplets["Attention"],
+            "sparse":     chiplets["Sparse"],
+            "conv":       chiplets["Convolution"],
+            "trace":      trace,
+            "algorithm":  "Custom",
         }
 
         return AgentResult(
@@ -164,19 +182,46 @@ class EvaluationAgent(BaseAgent):
 
         validation_error = self._validate_pistil_params(pistil_params)
         if validation_error:
+            print("C ", pistil_params)
             return AgentResult(success=False, message=validation_error, error=validation_error)
 
-        metrics = self._run_pistil(pistil_params, output_dir)
+        # If output_dir was not provided by the LLM, build a deterministic default
+        # that mirrors the path gaPistil uses so results land in the right place [5]
+        if output_dir is None:
+            import os
+            from api.Evaluator.gaPistil import PistilSimulator
+            sim = PistilSimulator()
+            output_dir = os.path.join(sim.sim_root, "dse", "results", "agent_eval")
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"[EvaluationAgent] output_dir was None, defaulting to: {output_dir}")
+
+        print("D ", pistil_params)
+        from api.config.objectives import OBJECTIVE_FIELD_MAP
+        objectives = context.get('objectives') or ['Latency per Token', 'Energy per Inference']
+        metrics = self._run_pistil(pistil_params, output_dir, objectives)
+
+        print("E ", objectives)
+
+        # Build objective results dynamically from whatever objectives were requested
+        objective_results = {}
+        for obj_name in objectives:
+            field = OBJECTIVE_FIELD_MAP.get(obj_name, obj_name)
+            if field in metrics:
+                objective_results[obj_name] = metrics[field]
+            else:
+                print(f"[EvaluationAgent] Warning: field '{field}' not found in metrics for objective '{obj_name}'")
+                objective_results[obj_name] = None
 
         evaluated_point = {
-            "energy":    metrics["energy_mJ"],
-            "exe_time":  metrics["latency_ms"],
-            "model":     pistil_params["model"],
-            "num_cus":   pistil_params["num_cus"],
-            "num_tmacs": pistil_params["num_tmacs"],
-            "batch_size": pistil_params["batch_size"],
-            "kv_cache":  pistil_params["kv_cache"],
-            "algorithm": "Custom",
+            "objectives":  objective_results,      # dynamic — whatever was requested
+            "energy":      metrics.get("energy_mJ"),   # kept for backward compat
+            "exe_time":    metrics.get("latency_ms"),   # kept for backward compat
+            "model":       pistil_params["model"],
+            "num_cus":     pistil_params["num_cus"],
+            "num_tmacs":   pistil_params["num_tmacs"],
+            "batch_size":  pistil_params["batch_size"],
+            "kv_cache":    pistil_params["kv_cache"],
+            "algorithm":   "Custom",
             # Preserve full metrics for callers that want them
             "metrics":   metrics,
         }
@@ -331,7 +376,7 @@ class EvaluationAgent(BaseAgent):
         from api.Evaluator.gaCascade import runSingleCascade
         return runSingleCascade(chiplets, trace, save_to_csv=True, source='Chatbot')
 
-    def _run_pistil(self, params: Dict[str, Any], output_dir: Optional[str]) -> Dict[str, Any]:
+    def _run_pistil(self, params: Dict[str, Any], output_dir: Optional[str], objectives) -> Dict[str, Any]:
         """
         Run a single Pistil simulation and return the full metrics dictionary.
 
@@ -339,17 +384,28 @@ class EvaluationAgent(BaseAgent):
         running a full GA: instantiates the problem, calls sim.run_dse_point,
         and loads results via _load_all_metrics.
         """
-        from api.Evaluator.gaPistil import PistilProblem
+        import os
+        from api.Evaluator.gaPistil import PistilProblem, PistilSimulator
+
+        # Second safety layer — should rarely trigger given the fix above [5]
+        if output_dir is None:
+            sim = PistilSimulator()
+            output_dir = os.path.join(sim.sim_root, "dse", "results", "agent_eval")
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"[EvaluationAgent._run_pistil] output_dir was None, defaulting to: {output_dir}")
 
         # Build a minimal PistilProblem just for its simulator and metrics loader.
         # num_cus from params is the only CU we need; supply it as the sole allowed value
         # so bounds are well-defined without affecting anything else.
+        print("1")
+        print("Pistil Setup Params:", params['model'], params['num_cus'], output_dir)
         problem = PistilProblem(
             model_name=params["model"],
             allowed_num_cus=[params["num_cus"]],
             output_dir=output_dir,
+            objectives=objectives
         )
-
+        print("2")
         # Inject fixed/default constants that gaPistil always adds (mirrors _decode_vector)
         full_params = dict(params)
         full_params.setdefault("w_dtype", 0.5)
@@ -364,7 +420,11 @@ class EvaluationAgent(BaseAgent):
         full_params.setdefault("sim_standalone", True)
         full_params.setdefault("base_config", "pistil-sys-base.json")
 
+        print("Running Pistil simulation with params:", full_params)
+
+        print("3")
         problem.sim.run_dse_point(full_params)
+        print("4")
         metrics = problem._load_all_metrics(full_params)
         problem._save_to_points_csv(full_params, metrics)
         return metrics

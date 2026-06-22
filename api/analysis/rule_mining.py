@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from api.config.evaluators import get_evaluator_config
 from .pareto import ParetoCalculator
+from api.config.objectives import to_fields
 
 
 @dataclass
@@ -45,35 +46,36 @@ class RuleMiner:
     # Feature bins for categorizing design variable values
     FEATURE_BINS = ['none', 'low', 'medium', 'high']
     
-    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.05):
+    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.01):
         self.evaluator = evaluator.lower()
         self.config = get_evaluator_config(evaluator)
         self.min_support = min_support
         self.pareto_calculator = ParetoCalculator()
     
-    def mine_rules(self, 
+    def mine_rules(self,
                    data: np.ndarray,
                    point_selection: np.ndarray = None,
-                   max_pareto_rank: int = 3) -> List[MiningRule]:
+                   max_pareto_rank: int = 3,
+                   objectives: List[str] = None,
+                   objective_col_indices: List[int] = None) -> List[MiningRule]:
         """
-        Perform rule mining on the dataset.
-        
         Args:
-            data: Full dataset with objectives and decisions.
-            point_selection: Points to analyze (default: top Pareto ranks).
-            max_pareto_rank: Maximum Pareto rank to include in selection.
-            
-        Returns:
-            List of discovered rules on the Pareto front of confidence values.
+            data: full dataset, columns = [all_objectives..., decisions...]
+            objectives: friendly objective names selected by user.
+            objective_col_indices: explicit column indices for the selected
+                                   objectives within `data`. If provided, used
+                                   directly. Otherwise we assume the first
+                                   `len(objectives)` columns ARE the selected
+                                   objectives (legacy behaviour).
         """
         if len(data) == 0:
             return []
-        
-        num_objectives = self.config.num_objectives
+
         decision_cols = self.config.decision_columns
-        
-        # Calculate Pareto ranks
-        point_vals = data[:, :num_objectives]
+        all_obj_cols = self.config.objective_columns  # internal field names
+        num_objectives = len(objective_col_indices) if objective_col_indices else len(objectives) if objectives else len(all_obj_cols)
+
+        point_vals = data[:, -num_objectives:] if self.config.objectives_first else data[:, :num_objectives]
         ranks = ParetoCalculator.calculate_pareto_ranks(point_vals)
         
         # Add ranks to data
@@ -88,6 +90,8 @@ class RuleMiner:
         
         # Build rules dictionary
         rules_dict = self._build_rules_dict(data_with_ranks, decision_cols, num_objectives)
+
+        print("Rules dict built! Keys:", list(rules_dict.keys()))
         
         # Find Pareto-optimal rule combinations
         pfront_rules, pfront_costs, pfront_lifts = self._find_pareto_rules(
@@ -116,8 +120,22 @@ class RuleMiner:
         Rules are defined based on relative ranges of design variables [2].
         """
         rules_dict = {}
-        
-        for chip_idx, col_name in enumerate(decision_cols):
+        n_cols = data.shape[1]
+        available_decision_cols = n_cols - num_objectives
+
+        if available_decision_cols <= 0:
+            print(f"[RuleMiner] WARNING: data has {n_cols} cols but {num_objectives} objectives "
+                f"— no decision columns available.")
+            return rules_dict
+
+        # Only iterate over decision columns that actually exist in data
+        actual_decision_cols = decision_cols[:available_decision_cols]
+        if len(actual_decision_cols) < len(decision_cols):
+            print(f"[RuleMiner] WARNING: config has {len(decision_cols)} decision cols "
+                f"but data only has {available_decision_cols}. "
+                f"Using: {actual_decision_cols}")
+
+        for chip_idx, col_name in enumerate(actual_decision_cols):
             col_idx = chip_idx + num_objectives
             col_data = data[:, col_idx]
             
@@ -196,6 +214,7 @@ class RuleMiner:
             pfront_lifts = pfront_lifts[pfront_mask]
             pfront_rules = [pfront_rules[i] for i in range(len(pfront_rules)) if pfront_mask[i]]
         
+        print(f"New Rules Found: {len(pfront_rules)} (previously {len(prev_pfront_rules)})")
         # Recurse if we found new rules
         if pfront_rules != prev_pfront_rules:
             pfront_rules, pfront_costs, pfront_lifts = self._add_rules(
@@ -347,7 +366,7 @@ class RuleFormatter:
                 display_name = cls.CHIPLET_DISPLAY_NAMES.get(chiplet_type, chiplet_type)
                 level_desc = cls.FEATURE_DESCRIPTIONS.get(level, level)
                 
-                descriptions.append(f"{level_desc} {display_name} chiplets")
+                descriptions.append(f"{level_desc} {display_name}")
         
         if not descriptions:
             return rule_string

@@ -14,14 +14,22 @@ class ParetoCalculator:
     @staticmethod
     def is_dominated(point1: Dict[str, Any], point2: Dict[str, Any]) -> bool:
         """
-        Check if point1 dominates point2 (both objectives minimized).
+        Check if point1 dominates point2 (all objectives minimized).
+        Supports 2 or 3 objectives.
         
         Returns True if point1 dominates point2.
         """
         x1, y1 = point1.get('x', 0), point1.get('y', 0)
         x2, y2 = point2.get('x', 0), point2.get('y', 0)
+        z1 = point1.get('z', None)
+        z2 = point2.get('z', None)
         
-        return (x1 <= x2 and y1 <= y2) and (x1 < x2 or y1 < y2)
+        if z1 is not None and z2 is not None:
+            # 3 objectives
+            return (x1 <= x2 and y1 <= y2 and z1 <= z2) and (x1 < x2 or y1 < y2 or z1 < z2)
+        else:
+            # 2 objectives
+            return (x1 <= x2 and y1 <= y2) and (x1 < x2 or y1 < y2)
     
     @staticmethod
     def is_pareto_efficient(costs: np.ndarray, return_mask: bool = True) -> np.ndarray:

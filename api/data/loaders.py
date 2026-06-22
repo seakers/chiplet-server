@@ -58,10 +58,10 @@ class PointsLoader:
     Consolidates the repeated CSV loading logic from views.py [1].
     """
     
-    def __init__(self, evaluator: str = 'cascade', run_id: str = None):
+    def __init__(self, evaluator: str = 'cascade', run_id: str = None, num_objs: int = None):
         self.evaluator = evaluator.lower()
         self.run_id = run_id
-        self.config = get_evaluator_config(evaluator)
+        self.config = get_evaluator_config(evaluator, num_objs=num_objs)
     
     def get_file_path(self, backup_filename: str = None) -> str:
         """Get the appropriate file path for loading points."""
@@ -116,47 +116,76 @@ class PointsLoader:
             file_path = self.get_file_path()
         
         if not os.path.exists(file_path):
+            print(f"ERROR: File does not exist: {file_path}")
             return []
+        
+        # print("B", file_path)  # Debug: print file path being loaded
         
         points = []
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
             if self.config.csv_has_header:
                 next(csv_reader, None)
-            
+            # print(f"Columns Needed: {len(self.config.decision_columns) + len(self.config.objective_columns)}")  # Debug: count rows
+            # print(f"Num Decision Columns: {len(self.config.decision_columns)}, Num Objective Columns: {len(self.config.objective_columns)}")  # Debug: count columns
             for row in csv_reader:
-                if len(row) < 6:
-                    continue
-                
-                if self.evaluator == 'cascade':
-                    points.append({
-                        'x': float(row[0]),  # exe_time
-                        'y': float(row[1]),  # energy
-                        'gpu': int(float(row[2])),
-                        'attn': int(float(row[3])),
-                        'sparse': int(float(row[4])),
-                        'conv': int(float(row[5])),
-                        'algorithm': row[6].strip() if len(row) > 6 else 'Genetic Algorithm',
-                        'trace': trace,
-                    })
-                elif self.evaluator == 'pistil':
-                    points.append({
-                        'x': float(row[9]),   # latency_ms
-                        'y': float(row[10]),  # energy_mJ
-                        'num_cus': int(float(row[0])),
-                        'num_tmacs': int(float(row[1])),
-                        'mem_buf_cap': int(float(row[2])),
-                        'net_buf_cap': int(float(row[3])),
-                        'mem_banks_per_group': int(float(row[4])),
-                        'mem_ranks': int(float(row[5])),
-                        'mem_frac_bank_cap': float(row[6]),
-                        'batch_size': int(float(row[7])),
-                        'kv_cache': int(float(row[8])),
-                        'algorithm': row[-1].strip() if len(row) > 11 and not _is_numeric(row[-1]) else 'Genetic Algorithm',
-                        'trace': trace,
-                    })
-        
+                # if len(row) < (len(self.config.decision_columns) + len(self.config.objective_columns)):
+                #     print(f"Warning: Skipping row with insufficient columns: {row}")
+                #     continue
+
+                point = {}
+                # Parse all objectives by name
+                for obj_name in self.config.objective_columns:
+                    try:
+                        idx = self.config.get_objective_index(obj_name)
+                        if idx < len(row):
+                            point[obj_name] = float(row[idx])
+                    except (ValueError, IndexError):
+                        print(f"Warning: Could not parse objective '{obj_name}' in row: {row}")
+                        continue
+
+                # Parse all decisions by name
+                for dec_name in self.config.decision_columns:
+                    try:
+                        idx = self.config.get_decision_index(dec_name)
+                        if idx < len(row):
+                            val = float(row[idx])
+                            # CASCADE keys are lowercase in frontend; PISTIL keys match config
+                            key = self._frontend_decision_key(dec_name)
+                            point[key] = int(val) if val.is_integer() else val
+                    except (ValueError, IndexError):
+                        print(f"Warning: Could not parse decision '{dec_name}' in row: {row}")
+                        continue
+
+                # Backward-compat: keep x/y as the first two objectives
+                if self.config.objective_columns:
+                    point['x'] = point.get(self.config.objective_columns[0], 0)
+                    if len(self.config.objective_columns) > 1:
+                        point['y'] = point.get(self.config.objective_columns[1], 0)
+
+                # Algorithm column (last column for CASCADE, configurable for PISTIL)
+                algo_col = len(row) - 1
+                if algo_col > len(self.config.decision_columns) + len(self.config.objective_columns) - 1:
+                    algo_val = row[algo_col].strip() if isinstance(row[algo_col], str) else ''
+                    point['algorithm'] = algo_val if algo_val and not _is_numeric(algo_val) else 'Genetic Algorithm'
+                else:
+                    point['algorithm'] = 'Genetic Algorithm'
+
+                point['trace'] = trace
+                point['model'] = self.evaluator.upper()
+                points.append(point)
+
         return points
+    
+    
+    def _frontend_decision_key(self, dec_name: str) -> str:
+        """Map config decision names to frontend-expected keys (CASCADE compatibility)."""
+        cascade_map = {
+            'GPU': 'gpu', 'Attention': 'attn',
+            'Sparse': 'sparse', 'Convolution': 'conv'
+        }
+        return cascade_map.get(dec_name, dec_name)
+    
     
     def load_points_as_numpy(self, file_path: str = None) -> Tuple[np.ndarray, np.ndarray]:
         """

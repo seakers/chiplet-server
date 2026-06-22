@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple, Any
 from dcor import distance_correlation
 
 from api.config.evaluators import get_evaluator_config
+from api.config.objectives import OBJECTIVE_FIELD_MAP, to_fields, DEFAULT_OBJECTIVES
 
 
 class DistanceCorrelationAnalyzer:
@@ -17,6 +18,8 @@ class DistanceCorrelationAnalyzer:
     def __init__(self, evaluator: str = 'cascade'):
         self.evaluator = evaluator.lower()
         self.config = get_evaluator_config(evaluator)
+
+        self.OBJECTIVE_KEY_MAP = OBJECTIVE_FIELD_MAP
     
     def calculate_correlations(self, 
                                objective_vals: np.ndarray, 
@@ -60,14 +63,8 @@ class DistanceCorrelationAnalyzer:
         return correlations
     
     def _normalize_metric_name(self, metric_name: str) -> str:
-        """Normalize metric names for consistent key formatting."""
-        name_map = {
-            'exe_time': 'Time',
-            'energy': 'Energy',
-            'latency_ms': 'Latency',
-            'energy_mJ': 'Energy',
-        }
-        return name_map.get(metric_name, metric_name.title())
+        # Friendly names come pre-formatted now; just return as-is.
+        return metric_name
     
     def get_correlation_string(self, correlations: Dict[str, float]) -> str:
         """
@@ -119,51 +116,63 @@ class DistanceCorrelationAnalyzer:
         
         return high_impact
     
-    def analyze_from_points(self, points: List[Dict[str, Any]]) -> Dict[str, Any]:
+    
+    def analyze_from_points(self, points, requested_objectives=None, metric_names=None):
         """
         Perform full distance correlation analysis from point dictionaries.
-        
-        This is a convenience method that handles the full analysis pipeline [1].
-        
+
         Args:
-            points: List of point dictionaries with x, y, and chiplet values.
-            
-        Returns:
-            Dictionary with correlations and analysis results.
+            points: list of point dicts loaded by PointsLoader.
+            requested_objectives: list of *friendly* names (e.g. ['Energy','Runtime']).
+            metric_names: list of *internal* field keys (e.g. ['energy','exe_time']).
+                          Takes priority over requested_objectives if both given.
         """
         if not points:
             return {'correlations': {}, 'high_impact': {}, 'summary': 'No data available.'}
-        
-        # Extract values based on evaluator type
-        if self.evaluator == 'cascade':
-            objective_vals = np.array([[p['x'], p['y']] for p in points])
-            design_vals = np.array([
-                [p.get('gpu', 0), p.get('attn', 0), p.get('sparse', 0), p.get('conv', 0)]
-                for p in points
-            ])
-            metric_names = ['exe_time', 'energy']
-            decision_names = ['GPU', 'Attention', 'Sparse', 'Convolution']
-        elif self.evaluator == 'pistil':
-            objective_vals = np.array([[p['x'], p['y']] for p in points])
-            design_vals = np.array([
-                [p.get('num_cus', 0), p.get('num_tmacs', 0), p.get('mem_buf_cap', 0),
-                 p.get('net_buf_cap', 0), p.get('mem_banks_per_group', 0),
-                 p.get('mem_ranks', 0), p.get('mem_frac_bank_cap', 0),
-                 p.get('batch_size', 0), p.get('kv_cache', 0)]
-                for p in points
-            ])
-            metric_names = ['latency_ms', 'energy_mJ']
-            decision_names = self.config.decision_columns
+
+        # Resolve metric (objective) field keys
+        if metric_names:
+            obj_fields = metric_names
+            obj_labels = metric_names  # already internal; use as-is for keys
+        elif requested_objectives:
+            obj_fields = to_fields(requested_objectives)
+            obj_labels = requested_objectives
         else:
-            raise ValueError(f"Unknown evaluator: {self.evaluator}")
-        
+            defaults = DEFAULT_OBJECTIVES.get(self.evaluator, [])
+            obj_fields = to_fields(defaults) or self.config.objective_columns
+            obj_labels = defaults or self.config.objective_columns
+
+        decision_names = self.config.decision_columns
+
+        # Build objective matrix using internal field keys
+        objective_vals = np.array([
+            [float(p.get(field, 0) or 0) for field in obj_fields]
+            for p in points
+        ])
+
+        # Decision keys: CASCADE points use 'gpu','attn','sparse','conv';
+        # PISTIL points use the same names as decision_columns.
+        cascade_map = {'GPU': 'gpu', 'Attention': 'attn',
+                       'Sparse': 'sparse', 'Convolution': 'conv'}
+        def _dec_key(name):
+            return cascade_map.get(name, name)
+
+        design_vals = np.array([
+            [float(p.get(_dec_key(dec), 0) or 0) for dec in decision_names]
+            for p in points
+        ])
+
+        # Pass FRIENDLY labels as metric_names so correlation keys end up
+        # human-readable (e.g. "GPU_vs_Energy" instead of "GPU_vs_energy")
         correlations = self.calculate_correlations(
-            objective_vals, design_vals, metric_names, decision_names
+            objective_vals, design_vals,
+            metric_names=obj_labels,
+            decision_names=decision_names
         )
-        
+        # print(f"Calculated correlations: {correlations}")
         high_impact = self.get_high_impact_variables(correlations)
         summary = self.get_correlation_string(correlations)
-        
+
         return {
             'correlations': correlations,
             'high_impact': high_impact,

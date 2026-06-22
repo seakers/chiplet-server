@@ -9,6 +9,7 @@ import csv
 import re
 from datetime import datetime
 from pathlib import Path
+import traceback
 
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
@@ -313,91 +314,123 @@ def load_previous_run(request):
     try:
         data = json.loads(request.body)
         backup_filename = data.get('backup_filename')
-        
+
         if not backup_filename:
             return JsonResponse({"status": "error", "message": "backup_filename is required"}, status=400)
-        
+
         WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
         results_dir = os.path.join(WORKSPACE, 'dse/results')
-        
-        # Check database first
-        try:
-            optimization_run = OptimizationRun.objects.filter(run_id=backup_filename).first()
-            if optimization_run:
-                points = []
-                for dp in optimization_run.design_points.all():
-                    points.append({
-                        'x': dp.execution_time_ms,
-                        'y': dp.energy_mj,
-                        'gpu': dp.gpu_count,
-                        'attn': dp.attention_count,
-                        'sparse': dp.sparse_count,
-                        'conv': dp.convolution_count,
-                        'algorithm': optimization_run.get_algorithm_display(),
-                    })
-                
-                run_id = f"loaded_run_{optimization_run.run_id}"
-                
-                # Write temp CSV for chart polling compatibility
-                temp_path = os.path.join(results_dir, f"temp_points_{run_id}.csv")
-                with open(temp_path, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    for p in points:
-                        writer.writerow([p['x'], p['y'], p['gpu'], p['attn'], p['sparse'], p['conv']])
-                
-                return JsonResponse({
-                    "status": "success",
-                    "data": points,
-                    "metadata": {
-                        'algorithm': optimization_run.get_algorithm_display(),
-                        'model': optimization_run.model,
-                        'objectives': optimization_run.objectives,
-                        'population_size': optimization_run.population_size,
-                        'generations': optimization_run.generations,
-                        'trace_name': optimization_run.trace_name,
-                    },
-                    "run_id": run_id,
-                    "source": "database"
-                })
-        except Exception as e:
-            print(f"DB lookup failed: {e}")
-        
-        # Fall back to backup file
-        # Handle both CASCADE and PISTIL
-        if backup_filename.startswith('pistil_run_'):
+
+        # ── Determine evaluator and resolve file path ──────────────────────────
+        is_pistil = backup_filename.startswith('pistil_run_')
+
+        if is_pistil:
             pistil_root = Path(sys.path[0]) / "api" / "Evaluator" / "sim-v2-4-pistil-sim-clean" / "dse" / "results"
             backup_path = pistil_root / backup_filename / "points.csv"
+            evaluator = 'pistil'
         else:
-            backup_path = os.path.join(results_dir, backup_filename)
-        
+            backup_path = Path(os.path.join(results_dir, backup_filename))
+            evaluator = 'cascade'
+
         if not os.path.exists(str(backup_path)):
-            return JsonResponse({"status": "error", "message": f"File not found: {backup_filename}"}, status=404)
-        
-        timestamp_str = str(backup_filename).replace("points_backup_", "").replace(".csv", "").replace("pistil_run_", "")
-        run_id = f"loaded_run_{timestamp_str}"
-        
-        loader = PointsLoader('pistil' if backup_filename.startswith('pistil_run_') else 'cascade')
+            return JsonResponse(
+                {"status": "error", "message": f"File not found: {backup_filename}"},
+                status=404
+            )
+
+        # ── Build a run_id from the filename ──────────────────────────────────
+        run_id = backup_filename
+
+        # ── Load points ────────────────────────────────────────────────────────
+        loader = PointsLoader(evaluator)
         points = loader.load_points_as_dicts(str(backup_path))
-        
-        # Write temp CSV
-        temp_path = os.path.join(results_dir, f"temp_points_{run_id}.csv")
-        with open(temp_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            for p in points:
-                writer.writerow([p['x'], p['y'], p.get('gpu', 0), p.get('attn', 0), p.get('sparse', 0), p.get('conv', 0)])
-        
-        # Load zip metadata if available
-        run_data_loader = RunDataLoader('cascade')
-        metadata = run_data_loader.load_run_metadata(str(backup_filename))
-        
+
+        if not points:
+            return JsonResponse(
+                {"status": "error", "message": "No valid data found in file"},
+                status=400
+            )
+
+        # ── Tag each point with model info ────────────────────────────────────
+        for point in points:
+            if not point.get('model'):
+                point['model'] = 'PISTIL' if is_pistil else 'CASCADE'
+
+        # ── Write a temp CSV for live-polling compatibility ────────────────────
+        if is_pistil:
+            # PISTIL results live in their own directory; write a temp CSV
+            # alongside so the chart polling endpoint can find it
+            temp_dir = pistil_root / f"temp_points_{run_id}"
+            os.makedirs(str(temp_dir), exist_ok=True)
+            temp_path = str(temp_dir / "points.csv")
+        else:
+            temp_path = os.path.join(results_dir, f"temp_points_{run_id}.csv")
+
+        try:
+            with open(temp_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                if points:
+                    writer.writeheader() if hasattr(writer, 'writeheader') else None
+                    # Write rows based on evaluator type
+                    if is_pistil:
+                        for p in points:
+                            writer.writerow([
+                                p.get('num_cus', ''),
+                                p.get('num_tmacs', ''),
+                                p.get('mem_buf_cap', ''),
+                                p.get('batch_size', ''),
+                                p.get('latency_per_token_ms', p.get('x', '')),
+                                p.get('energy_per_inference_mJ', p.get('y', '')),
+                            ])
+                    else:
+                        for p in points:
+                            writer.writerow([
+                                p.get('x', ''),
+                                p.get('y', ''),
+                                p.get('gpu', ''),
+                                p.get('attn', ''),
+                                p.get('sparse', ''),
+                                p.get('conv', ''),
+                            ])
+        except Exception as write_err:
+            print(f"[load_previous_run] Warning: could not write temp CSV: {write_err}")
+
+        # ── Load zip metadata if available (CASCADE only) ─────────────────────
+        metadata = {}
+        if not is_pistil:
+            try:
+                run_data_loader = RunDataLoader('cascade')
+                metadata = run_data_loader.load_run_metadata(str(backup_filename))
+            except Exception as meta_err:
+                print(f"[load_previous_run] Warning: could not load metadata: {meta_err}")
+        else:
+            # Build basic metadata from the PISTIL run directory name
+            try:
+                timestamp = datetime.strptime(backup_filename.replace("pistil_run_", ""), "%Y%m%d_%H%M%S")
+                metadata = {
+                    'model': 'PISTIL',
+                    'algorithm': 'Genetic Algorithm',
+                    'timestamp': timestamp.isoformat(),
+                    'point_count': len(points),
+                }
+            except ValueError:
+                metadata = {
+                    'model': 'PISTIL',
+                    'algorithm': 'Unknown',
+                    'timestamp': None,
+                    'point_count': len(points),
+                }
+
         return JsonResponse({
             "status": "success",
             "data": points,
             "metadata": metadata,
             "run_id": run_id,
-            "source": "file"
+            "evaluator": evaluator.upper(),
+            "source": "file",
+            "backup_filename": backup_filename,
         })
-        
+
     except Exception as e:
         traceback.print_exc()
         return JsonResponse({"status": "error", "message": str(e)}, status=500)

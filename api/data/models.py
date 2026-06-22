@@ -8,25 +8,22 @@ from datetime import datetime
 
 @dataclass
 class DesignPoint:
-    """Represents a single chiplet design configuration and its performance."""
-    execution_time_ms: float
-    energy_mj: float
+    objectives: Dict[str, float]      # NEW: e.g., {'energy_mj': 5.2, 'latency_ms': 12}
     chiplets: Dict[str, int]
     pareto_rank: Optional[int] = None
     additional_metrics: Dict[str, Any] = field(default_factory=dict)
     context_file_path: str = ""
     algorithm: str = ""
     trace: str = ""
-    
+
+    # Backward-compat properties
     @property
-    def x(self) -> float:
-        """Alias for execution_time_ms (for plotting)."""
-        return self.execution_time_ms
-    
+    def execution_time_ms(self) -> float:
+        return self.objectives.get('exe_time_ms', self.objectives.get('latency_per_token_ms', 0))
+
     @property
-    def y(self) -> float:
-        """Alias for energy_mj (for plotting)."""
-        return self.energy_mj
+    def energy_mj(self) -> float:
+        return self.objectives.get('energy_mj', self.objectives.get('energy_per_inference_mJ', 0))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""

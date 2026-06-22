@@ -73,6 +73,7 @@ class ChatBot:
         self._init_agents()
         self.preprocessor = QueryPreprocessor()
         self.last_agent_results = []
+        self.active_objectives = []
     
     def _get_default_specs(self) -> List[Dict[str, str]]:
         """Get default system specifications."""
@@ -193,10 +194,18 @@ class ChatBot:
         Centralizes context construction used across tool calls.
         """
         return {
-            'points':        self._load_current_points(),
-            'point_context': self.point_context,
-            'full_data':     self.full_data,
+            'evaluator':      self.evaluator,
+            'run_id':         self.run_id,
+            'objectives':     getattr(self, 'active_objectives', None),
+            'full_data':      self.full_data,
+            'point_context':  self.point_context,
         }
+    
+
+    def set_objectives(self, objectives: list):
+        """Set the active objectives for this run (e.g. ['Runtime', 'Energy'])."""
+        self.active_objectives = objectives
+        print(f"[ChatBot] Active objectives set to: {objectives}")
 
 
     def _build_tools(self) -> list:
@@ -343,31 +352,37 @@ class ChatBot:
         self.point_in_active_context = True
         
         try:
-            with open(context_file_path, 'r') as file:
-                self.full_data = json.load(file)
-                
-                for kernel in self.full_data:
-                    kernel_data = []
-                    chiplets = kernel.get('chiplets', {})
+            if "cascade" in context_file_path:
+                with open(context_file_path, 'r') as file:
+                    self.full_data = json.load(file)
                     
-                    for chiplet_id, chiplet_info in chiplets.items():
-                        chiplet_data = []
-                        for key, value in chiplet_info.items():
-                            if key != 'name':
-                                chiplet_data.append(value)
-                        kernel_data.append(chiplet_data)
+                    for kernel in self.full_data:
+                        kernel_data = []
+                        chiplets = kernel.get('chiplets', {})
+                        
+                        for chiplet_id, chiplet_info in chiplets.items():
+                            chiplet_data = []
+                            for key, value in chiplet_info.items():
+                                if key != 'name':
+                                    chiplet_data.append(value)
+                            kernel_data.append(chiplet_data)
+                        
+                        # Add total data
+                        total_data = []
+                        for key, value in kernel.get('total', {}).items():
+                            total_data.append(value)
+                        kernel_data.append(total_data)
+                        
+                        self.point_context.append(kernel_data)
                     
-                    # Add total data
-                    total_data = []
-                    for key, value in kernel.get('total', {}).items():
-                        total_data.append(value)
-                    kernel_data.append(total_data)
+                    self.point_context = np.array(self.point_context)
+                    print(f"Point Context Shape: {self.point_context.shape}")
+            else:
+                # For pistil: load CSV or JSON based on file extension
+                for path in context_file_path:
+                    with open(path, 'r') as file:
+                        self.point_context.append(file.read())
                     
-                    self.point_context.append(kernel_data)
-                
-                self.point_context = np.array(self.point_context)
-                print(f"Point Context Shape: {self.point_context.shape}")
-                
         except FileNotFoundError:
             print(f"Error: File at {context_file_path} not found.")
             self.point_in_active_context = False
@@ -423,19 +438,19 @@ class ChatBot:
         )
         
         return analyzer.get_correlation_string(correlations)
-    
-    def rule_mining(self, point_selection_params: Dict[str, Any] = None) -> str:
-        """
-        Perform rule mining on the data to find patterns in the Pareto front.
         
-        This delegates to the RuleMiningAgent but maintains backward compatibility [2].
-        """
+    def rule_mining(self, point_selection_params=None):
+        # Extract max_pareto_rank from point_selection_params so the agent receives it
+        max_pareto_rank = 3  # default
+        if point_selection_params:
+            max_pareto_rank = point_selection_params.get('pareto_end_rank', 3)
+
         context = {
             'point_selection_params': point_selection_params,
+            'objectives': getattr(self, 'active_objectives', None),
+            'max_pareto_rank': max_pareto_rank,
         }
-        
         result = self.agents['rule_mining_agent'].execute(context)
-        
         if result.success:
             return result.data.get('rules_string', result.message)
         return result.message
@@ -498,7 +513,7 @@ class ChatBot:
     def clear_history(self):
         self.messages = self._specs.copy()
         self.memory = ConversationMemory()   # Add this line
-        self.point_context = None
+        # self.point_context = None
         self.point_in_active_context = False
         self.full_data = []
     

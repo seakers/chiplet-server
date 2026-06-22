@@ -48,7 +48,11 @@ class HighlightingAgent(BaseAgent):
             if mode == 'pareto_rank':
                 min_rank = context.get('min_rank', 1)
                 max_rank = context.get('max_rank', 1)
-                highlighted_indices = self._by_pareto_rank(points, min_rank, max_rank)
+                # Pass active objectives through
+                active_objectives = context.get('objectives')
+                highlighted_indices = self._by_pareto_rank(
+                    points, min_rank, max_rank, active_objectives
+                )
                 description = f"Pareto ranks {min_rank}–{max_rank}"
 
             elif mode == 'objective_range':
@@ -135,31 +139,64 @@ class HighlightingAgent(BaseAgent):
                 error=str(e)
             )
 
-    def _by_pareto_rank(self, points, min_rank, max_rank):
-        try:
-            from api.analysis.pareto import ParetoCalculator
-            calculator = ParetoCalculator()
-            ranks = calculator.calculate_pareto_ranks(points, self.evaluator)
-            return [i for i, r in enumerate(ranks) if min_rank <= r <= max_rank]
-        except Exception as e:
-            print(f"[HighlightingAgent] ParetoCalculator failed: {e}, falling back to manual calculation")
-            # Manual Pareto rank calculation as fallback
-            return self._manual_pareto_rank(points, min_rank, max_rank)
+    def _by_pareto_rank(self, points, min_rank, max_rank, objectives=None):
+        from api.analysis.pareto import ParetoCalculator
+        from api.config.objectives import to_fields, DEFAULT_OBJECTIVES
 
-    def _manual_pareto_rank(self, points, min_rank, max_rank):
+        # Resolve which fields to use for Pareto ranking
+        # print(f"[HighlightingAgent] Resolving fields for Pareto ranking with objectives: {objectives}")
+        if objectives:
+            # Map friendly names → internal keys, then fall back to x/y if not in point
+            fields = to_fields(objectives)
+        elif self.evaluator.lower() == 'pistil':
+            fields = DEFAULT_OBJECTIVES.get('pistil', [])
+            fields = to_fields(fields) if fields else ['latency_per_token_ms', 'energy_per_inference_mJ']
+        else:
+            fields = ['x', 'y']
+
+        # Fallback: if a field isn't in the points, try x/y
+        sample = points[0] if points else {}
+        resolved = []
+        for f in fields:
+            if f in sample:
+                resolved.append(f)
+            elif 'x' in sample:
+                resolved.append('x' if len(resolved) == 0 else 'y')
+
+        if not resolved:
+            resolved = ['x', 'y']
+
+        try:
+            obj_array = np.array([
+                [float(pt.get(f, 0) or 0) for f in resolved]
+                for pt in points
+            ])
+
+            if len(obj_array) == 0:
+                return []
+
+            # print(f"[HighlightingAgent] Calculating Pareto ranks for {len(obj_array)} points")
+            # print(f"[HighlightingAgent] Full Obj_array: {obj_array}")
+            ranks = ParetoCalculator.calculate_pareto_ranks(obj_array, max_ranks=max_rank)
+            # print(f"[HighlightingAgent] Pareto ranks calculated: {ranks}")
+            return [i for i, r in enumerate(ranks) if (min_rank - 1) <= r <= (max_rank - 1)]
+
+        except Exception as e:
+            print(f"[HighlightingAgent] ParetoCalculator failed: {e}, falling back to manual")
+            return self._manual_pareto_rank(points, min_rank, max_rank, resolved[0],
+                                            resolved[1] if len(resolved) > 1 else resolved[0], None)
+
+    def _manual_pareto_rank(self, points, min_rank, max_rank, x_key, y_key, z_key):
         """Manual Pareto ranking fallback using x/y objectives."""
         # Choose correct objective keys based on evaluator
-        if self.evaluator.lower() == 'pistil':
-            x_key, y_key = 'latency_per_token_ms', 'energy_per_inference_mJ'
-        else:
-            x_key, y_key = 'x', 'y'
-
-        # Extract objective values
         objectives = []
         for i, pt in enumerate(points):
             x_val = pt.get(x_key) or pt.get('x')
             y_val = pt.get(y_key) or pt.get('y')
-            if x_val is not None and y_val is not None:
+            z_val = pt.get(z_key) or pt.get('z')
+            if x_val is not None and y_val is not None and z_val is not None:
+                objectives.append((i, float(x_val), float(y_val), float(z_val)))
+            elif x_val is not None and y_val is not None:
                 objectives.append((i, float(x_val), float(y_val)))
 
         # Assign Pareto ranks iteratively
