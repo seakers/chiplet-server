@@ -540,7 +540,7 @@ def run_ppo_cascade(params):
 
 
 # ============== Entry Point ==============
-def runPPOCascade(num_epochs=50, mini_batch_size=8, trace="gpt-j-65536-weighted"):
+def runPPOCascade(num_epochs=50, mini_batch_size=8, trace="gpt-j-65536-weighted", objectives=None):
     """
     Main entry point for running PPO on Cascade.
     Transformer-based actor/critic replace the original MLP versions [1].

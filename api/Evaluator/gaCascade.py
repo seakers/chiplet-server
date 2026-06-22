@@ -22,7 +22,7 @@ import json
 from copy import deepcopy
 
 class CascadeProblem(ElementwiseProblem):
-    def __init__(self, TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR):
+    def __init__(self, TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR, objectives):
         super().__init__(n_var=12, 
                          n_obj=2, 
                          n_constr=0, 
@@ -34,7 +34,17 @@ class CascadeProblem(ElementwiseProblem):
         self.EXPERIMENT_DIR = EXPERIMENT_DIR
         self.OUTPUT_DIR = OUTPUT_DIR
 
+        self.objectives = objectives
+
         self.tp = TraceParser(self.TRACE_DIR, self.EXPERIMENT_DIR)
+
+        self.name_to_index = {
+            "Energy": "energy",
+            "Runtime": "exe_time",
+            "DRAM": "energy_dram",
+            "Memory": "mem_accessed",
+            "FLOPS": "flops"
+        }
     
     def _evaluate(self, x, out, *args, **kwargs):
         numChips = Counter(x)
@@ -55,14 +65,15 @@ class CascadeProblem(ElementwiseProblem):
             kernel_results = cs.characterize_workload(self.tp.get_trace(TRACE_ID), cut_dim="batch" if self.tp.all_traces[TRACE_ID].get_model() == "dnn" else "weights", dtype=2)
             agg_kernel_results += kernel_results * self.tp.all_traces[TRACE_ID].weighted_score # sudo run the workload "weighted_score" times
 
-        total_exe, total_energy = self.getTimeAndEnergy(agg_kernel_results, cs.get_num_chiplets())
+        results = self.get_total_vals(agg_kernel_results, cs.get_num_chiplets())
         # if total_exe == 0 or total_energy == 0:
         #     out["F"] = [10e6, 10e6]
         # else:
 
         result_file = self.OUTPUT_DIR + "/points.csv"
         algorithm_label = getattr(self, 'algorithm_label', 'Genetic Algorithm')
-        entry = f"{total_exe},{total_energy},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]},{algorithm_label}\n"
+        objective_entry = ",".join([str(results.get(self.name_to_index[obj], 0)) for obj in self.objectives])
+        entry = f"{objective_entry},{numChips[0]},{numChips[1]},{numChips[2]},{numChips[3]},{algorithm_label}\n"
 
         # Always append to points.csv (even duplicates) so evaluation order is preserved
         # for hypervolume curve reconstruction in compare_optimizers.py
@@ -88,12 +99,15 @@ class CascadeProblem(ElementwiseProblem):
         else:
             print(f"Context file already exists, skipping JSON write.")
 
-        out["F"] = [total_exe, total_energy]
+        out["F"] = [results.get(self.name_to_index.get(o), 0.0) for o in self.objectives]
 
-    def getTimeAndEnergy(self, kernel_results, num_chiplets):
+    def get_total_vals(self, kernel_results, num_chiplets):
         kernel_names = [] 
         kernel_exe = []
         kernel_energy = []
+        kernel_energy_dram = []
+        kernel_mem_accessed = []
+        kernel_flops = []
         kernel_work = {}
         kernel_breakdown = {}
         chiplet_names = []
@@ -110,6 +124,9 @@ class CascadeProblem(ElementwiseProblem):
                     kernel_work[chiplet_id].append(0)
             kernel_exe.append(kernel["total"]["exe_time"])
             kernel_energy.append(kernel["total"]["energy"] )
+            kernel_energy_dram.append(kernel["total"].get("energy_dram", 0))
+            kernel_mem_accessed.append(kernel["total"].get("mem_accessed", 0))
+            kernel_flops.append(kernel["total"].get("flops", 0))
 
             if kernel["name"] not in kernel_breakdown:
                 kernel_breakdown[kernel["name"]] = 0
@@ -119,6 +136,9 @@ class CascadeProblem(ElementwiseProblem):
         # normalize kernel_work
         total_exe = sum(kernel_exe)
         total_energy = sum(kernel_energy)
+        total_energy_dram = sum(kernel_energy_dram)
+        total_mem_accessed = sum(kernel_mem_accessed)
+        total_flops = sum(kernel_flops)
 
         kernel_work_agg = []
         for chiplet_id in range(num_chiplets):
@@ -128,8 +148,8 @@ class CascadeProblem(ElementwiseProblem):
         # for frac_work in kernel_work_agg:
         #     print("%0.2f%%" % (frac_work*100), end=" ")
         # print("]")
-        print("Total Time: %0.5fms" % (total_exe*1000))
-        print("Total Energy: %0.5fmJ" % (total_energy*10**3))
+        # print("Total Time: %0.5fms" % (total_exe*1000))
+        # print("Total Energy: %0.5fmJ" % (total_energy*10**3))
 
         # # Write outputs to a file
         # outlist = [total_exe*1000, total_energy*10**3]
@@ -137,9 +157,17 @@ class CascadeProblem(ElementwiseProblem):
         #     writer = csv.writer(f)
         #     writer.writerow(outlist)
 
-        return float(total_exe*1000), float(total_energy*10**3)
+        aggregated_params = {
+            'exe_time': float(total_exe*1000),
+            'energy': float(total_energy*10**3),
+            'energy_dram': float(total_energy_dram*10**3),
+            'mem_accessed': float(total_mem_accessed),
+            'flops': float(total_flops)
+        }
 
-def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return_decisions=False, output_dir=None):
+        return aggregated_params
+
+def runGACascade(pop_size=10, n_gen=5, trace="", objectives=None, initial_population=None, return_decisions=False, output_dir=None):
     """
     Run the Genetic Algorithm for Cascades.
     If initial_population is provided, use it as the initial population for the GA.
@@ -158,6 +186,9 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
         OUTPUT_DIR=WORKSPACE+'/dse/results'
     result_dir = output_dir if output_dir is not None else OUTPUT_DIR
     points_file = os.path.join(result_dir, "points.csv")
+    if not objectives:
+        objectives = ['Runtime', 'Energy']
+    print(f"[gaCascade] Optimizing for: {objectives}")
     with open(points_file, 'w') as f:
         pass  # Truncate the file (empty it)
     if isinstance(trace, dict):
@@ -184,7 +215,7 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
         print("experiment being performed: ", EXPERIMENT_DIR)
         print("Pop Size: ", pop_size)
         print("Number of Generations: ", n_gen)
-        problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR)
+        problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR, objectives)
         problem.algorithm_label = 'Genetic Algorithm'
         # Use initial_population if provided, else IntegerRandomSampling
         if initial_population is not None:
@@ -217,7 +248,7 @@ def runGACascade(pop_size=10, n_gen=5, trace="", initial_population=None, return
             return {"objectives": res.F, "decisions": res.X}
         return res.F
 
-def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="", save_to_csv=True, source="Custom"):
+def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sparse": 3}, trace="", objectives=None, save_to_csv=True, source="Custom"):
     """
     Run a single instance of the Cascade model.
     """
@@ -239,6 +270,10 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     CHIPLET_LIBRARY = CHIPLET_LIBRARY
     EXPERIMENT_DIR = EXPERIMENT_DIR
     OUTPUT_DIR = OUTPUT_DIR
+
+    if objectives is None:
+        objectives = ['Runtime', 'Energy']
+    print(f"Optimizing for objectives: {objectives}")
 
     tp = TraceParser(TRACE_DIR, EXPERIMENT_DIR)
 

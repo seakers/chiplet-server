@@ -16,6 +16,7 @@ from pymoo.operators.mutation.pm import PM
 # Dynamically load PistilSimulator from pistil_runner.py since the directory
 # name contains hyphens and is not an importable Python package.
 import importlib.util as _importlib_util
+from api.config.objectives import OBJECTIVE_FIELD_MAP
 
 _SIM_ROOT = Path(__file__).parent / "sim-v2-4-pistil-sim-clean"
 _PISTIL_RUNNER_PATH = _SIM_ROOT / "pistil_runner.py"
@@ -51,8 +52,8 @@ class PistilProblem(ElementwiseProblem):
         x[8] -> kv_cache                 (int, power of 2, from KV_CACHE_CHOICES)
     """
 
-    TMAC_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
-    MEM_BUF_CHOICES = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    TMAC_CHOICES = [2, 4, 8, 12, 16]
+    MEM_BUF_CHOICES = [0.25, 0.5, 0.75, 1.0]
     BANK_GROUP_CHOICES = [1, 2, 3, 4]
     RANK_CHOICES = [1, 2, 3, 4]
     FRAC_BANK_CHOICES = [0.5, 0.75, 1.0]
@@ -80,6 +81,7 @@ class PistilProblem(ElementwiseProblem):
         batch_bounds=(1, 64),
         kv_cache_bounds=(1024, 8192),
         output_dir: str = None,
+        objectives: list = None
     ):
         if allowed_num_cus is None:
             # Default reasonable Pistil-friendly CU counts (must be multiple of 4)
@@ -92,6 +94,7 @@ class PistilProblem(ElementwiseProblem):
 
         self.batch_min, self.batch_max = batch_bounds
         self.kvcache_min, self.kvcache_max = kv_cache_bounds
+        self.objectives = objectives
         
         # Generate power-of-2 choices for batch_size and kv_cache
         self.BATCH_CHOICES = self._generate_power_of_2_choices(self.batch_min, self.batch_max)
@@ -153,12 +156,18 @@ class PistilProblem(ElementwiseProblem):
 
         super().__init__(
             n_var=n_var,
-            n_obj=2,  # time (ms), energy (mJ)
+            n_obj=len(objectives),  # time (ms), energy (mJ)
             n_constr=0,
             xl=xl,
             xu=xu,
             vtype=float,
         )
+
+        self.obj_key_map = OBJECTIVE_FIELD_MAP
+
+        self.maximize = {'avg_comp_util', 'avg_mem_util', 'prefill_tokens_per_sec',
+                    'system_compute_TOPS', 'system_bandwidth_TBps', 'system_capacity_GB'}
+        
 
     def _decode_vector(self, x):
         """
@@ -254,25 +263,29 @@ class PistilProblem(ElementwiseProblem):
             eval_elapsed = time_module.time() - eval_start_time
             print(f"  [Simulation completed in {eval_elapsed:.1f} seconds]")
             metrics_dict = self._load_all_metrics(params)
-            time_ms = metrics_dict["latency_ms"]
-            energy_mJ = metrics_dict["energy_mJ"]
+            f_values = []
+            for obj_name in self.objectives:
+                metric_key = self.obj_key_map.get(obj_name, obj_name)
+                val = float(metrics_dict.get(metric_key, 0.0))
+                # Negate values that should be maximized (pymoo minimizes)
+                if metric_key in self.maximize:
+                    val = -val
+                f_values.append(val)
             
             # Save to points.csv (similar to cascade)
             self._save_to_points_csv(params, metrics_dict)
             
             print(f"[PISTIL GA] Evaluation #{self._eval_count}: ✓ Completed successfully")
-            print(f"  Results: latency={time_ms:.2f}ms, energy={energy_mJ:.2f}mJ")
-            print(f"  Per-token: latency={metrics_dict.get('latency_per_token_ms', 0):.3f}ms, "
-                  f"energy={metrics_dict.get('energy_per_token_mJ', 0):.3f}mJ")
             print(f"  Saved to CSV: {self.points_csv_path}")
         except Exception as e:
             # On failure, penalize this design heavily so GA avoids it
             print(f"[PISTIL GA] Evaluation #{self._eval_count}: ✗ ERROR - {e}")
             import traceback
             traceback.print_exc()
-            time_ms, energy_mJ = 1e9, 1e9
+            # time_ms, energy_mJ = 1e9, 1e9
+            f_values = [1e9] * len(self.objectives)
 
-        out["F"] = [time_ms, energy_mJ]
+        out["F"] = f_values
 
     def _load_all_metrics(self, params):
         """
@@ -539,6 +552,7 @@ def runGAPistil(
     pop_size=50,
     n_gen=10,
     model_name="llama3-8b",
+    objectives=None,
     allowed_num_cus=None,
     batch_bounds=(1, 64),
     kv_cache_bounds=(1024, 8192),
@@ -555,6 +569,10 @@ def runGAPistil(
     """
     import time
     start_time = time.time()
+
+    if not objectives:
+        objectives = ['Latency per Token', 'Energy per Inference']
+    print(f"[gaPistil] Optimizing for: {objectives}")
     
     print("\n" + "=" * 80)
     print(f"[PISTIL GA] ===== GA RUN INITIALIZATION =====")
@@ -565,6 +583,7 @@ def runGAPistil(
     print(f"    - Model: {model_name}")
     print(f"    - Batch Bounds: {batch_bounds}")
     print(f"    - KV Cache Bounds: {kv_cache_bounds}")
+    print(f"    - Objectives: {objectives}")
     print("=" * 80 + "\n")
     
     # Create output directory for this run
@@ -588,6 +607,7 @@ def runGAPistil(
         batch_bounds=batch_bounds,
         kv_cache_bounds=kv_cache_bounds,
         output_dir=output_dir,
+        objectives=objectives
     )
     problem.algorithm_label = 'Genetic Algorithm'
 
