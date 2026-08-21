@@ -183,6 +183,9 @@ def run_optimization(request):
     try:
         data = json.loads(request.body)
 
+        if data.get('comparative_study'):
+            return _run_comparative_study(data)
+
         algorithm_raw = data.get('algorithm', 'Genetic Algorithm')
         model         = data.get('model', 'CASCADE')
         objectives    = data.get('objectives', [])
@@ -718,6 +721,134 @@ def run_optimization(request):
         traceback.print_exc()
         return JsonResponse({"status": "error", "message": str(e)}, status=500)
 
+def _run_comparative_study(data):
+    """
+    Handle a comparative-study request from the frontend's
+    comparativeAnalysis.js service.
+
+    Payload shape:
+        {
+          "comparative_study": true,
+          "run_a": { "type": "previous" | "new", ... },
+          "run_b": { "type": "previous" | "new", ... }
+        }
+    """
+    from api.analysis.pareto import ParetoCalculator
+    from api.config.objectives import to_field
+
+    run_a_cfg = data.get('run_a') or {}
+    run_b_cfg = data.get('run_b') or {}
+
+    if not run_a_cfg or not run_b_cfg:
+        return JsonResponse(
+            {"status": "error", "message": "Both run_a and run_b are required for comparative study."},
+            status=400,
+        )
+
+    # Cross-evaluator comparison is not supported (report generator warns about it [7])
+    model_a = (run_a_cfg.get('model') or '').upper()
+    model_b = (run_b_cfg.get('model') or '').upper()
+    if model_a and model_b and model_a != model_b:
+        return JsonResponse({
+            "status": "error",
+            "message": f"Cannot compare runs across different evaluators "
+                       f"(Run A: {model_a}, Run B: {model_b}).",
+        }, status=400)
+
+    try:
+        run_a_id = _resolve_comparative_run(run_a_cfg, side='A')
+        run_b_id = _resolve_comparative_run(run_b_cfg, side='B')
+    except ValueError as e:
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({"status": "error", "message": f"Failed to prepare runs: {e}"}, status=500)
+
+    # Load points for both runs and compute Pareto summaries
+    evaluator = (model_a or model_b or 'CASCADE').lower()
+
+    def load_summary(run_id, cfg):
+        ev = (cfg.get('model') or evaluator).lower()
+        loader = PointsLoader(ev, run_id)
+        points = loader.load_points_as_dicts()
+        pareto = ParetoCalculator.get_pareto_front(points) if points else []
+        return points, pareto
+
+    points_a, pareto_a = load_summary(run_a_id, run_a_cfg)
+    points_b, pareto_b = load_summary(run_b_id, run_b_cfg)
+
+    # Per-objective bests (all objectives are minimized in the current setup [7])
+    def bests(points, objectives, prefix):
+        result = {}
+        for obj in objectives or []:
+            field = to_field(obj)
+            vals = [p.get(field) for p in points
+                    if isinstance(p.get(field), (int, float))]
+            if vals:
+                key = f"{prefix}_best_{obj.lower().replace(' ', '_')}"
+                result[key] = min(vals)
+        return result
+
+    response = {
+        "status":       "success",
+        "run_a_id":     run_a_id,
+        "run_b_id":     run_b_id,
+        "run_a_points": len(points_a),
+        "run_b_points": len(points_b),
+        "run_a_pareto": len(pareto_a),
+        "run_b_pareto": len(pareto_b),
+    }
+    response.update(bests(points_a, run_a_cfg.get('objectives'), 'run_a'))
+    response.update(bests(points_b, run_b_cfg.get('objectives'), 'run_b'))
+
+    return JsonResponse(response)
+
+
+def _resolve_comparative_run(cfg, side):
+    """
+    Return a run_id for one side of a comparative study.
+
+    - 'previous' runs: load the backup and return the resulting run_id
+      (reuses the load_previous_run path [8]).
+    - 'new' runs: kick off a synchronous single run and return its run_id.
+    """
+    run_type = cfg.get('type')
+
+    if run_type == 'previous':
+        backup_filename = cfg.get('backup_filename')
+        if not backup_filename:
+            raise ValueError(f"Run {side}: missing backup_filename for previous run.")
+
+        # Build a fake request and reuse the existing loader endpoint [8]
+        from api.views.reports import load_previous_run
+        from rest_framework.test import APIRequestFactory
+        factory = APIRequestFactory()
+        drf_req = factory.post(
+            '/api/load-previous-run/',
+            data=json.dumps({'backup_filename': backup_filename}),
+            content_type='application/json',
+        )
+        resp = load_previous_run(drf_req)
+        body = json.loads(resp.content.decode()) if hasattr(resp, 'content') else resp.data
+        if body.get('status') != 'success':
+            raise ValueError(f"Run {side}: failed to load previous run '{backup_filename}': "
+                             f"{body.get('message')}")
+        return body.get('run_id')
+
+    if run_type == 'new':
+        # Reuse the same run_optimization body by re-entering with a normalized
+        # single-run payload. Simplest: assemble the payload the single-run
+        # branch already expects and call runGACascade / PISTIL GA directly.
+        # For now, we require that at least one side is 'previous' — full
+        # new+new support means starting two async GAs and waiting for both,
+        # which is a separate task.
+        raise ValueError(
+            f"Run {side}: 'new' runs from the comparative view are not yet "
+            f"supported. Please start each run individually first, then compare "
+            f"them as 'previous' runs."
+        )
+
+    raise ValueError(f"Run {side}: unknown run type {run_type!r}.")
 
 # ─────────────────────────────────────────────
 # Additional optimization endpoints
@@ -1142,12 +1273,20 @@ def evaluate_point_inputs(request):
             "attn":      chiplets["Attention"],
             "sparse":    chiplets["Sparse"],
             "conv":      chiplets["Convolution"],
-            "algorithm": "Custom",
+            "algorithm": "User",
             "trace":     trace,
         }
         
         return Response({
-            "evaluated_point": evaluated_point,
+            "x":         objectives[0],   # runtime
+            "y":         objectives[1],   # energy
+            "gpu":       chiplets["GPU"],
+            "attn":      chiplets["Attention"],
+            "sparse":    chiplets["Sparse"],
+            "conv":      chiplets["Convolution"],
+            "algorithm": "User",
+            "trace":     trace,
+            "evaluated_point": evaluated_point,   # keep nested too, for any other caller
             "message": "Point evaluated successfully"
         })
         

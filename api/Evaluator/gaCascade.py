@@ -272,7 +272,7 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
     OUTPUT_DIR = OUTPUT_DIR
 
     if objectives is None:
-        objectives = ['Runtime', 'Energy']
+        objectives = ['Energy', 'Runtime']
     print(f"Optimizing for objectives: {objectives}")
 
     tp = TraceParser(TRACE_DIR, EXPERIMENT_DIR)
@@ -326,35 +326,34 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
             kernel_breakdown[kernel["name"]] = 0
         kernel_breakdown[kernel["name"]] += kernel["total"]["exe_time"]
         kernel_names.append(kernel["name"])
-    
-    # normalize kernel_work
-    total_exe = sum(kernel_exe)*1000
-    total_energy = sum(kernel_energy)*10**3
-
-    print("Total Time: %0.5fms" % (total_exe))
-    print("Total Energy: %0.5fmJ" % (total_energy))
 
     # Only save to CSV if save_to_csv is True (for genetic algorithm points, not custom designs)
+    problem = CascadeProblem(TRACE_DIR, CHIPLET_LIBRARY, EXPERIMENT_DIR, OUTPUT_DIR, objectives)
     if save_to_csv:
+        results = problem.get_total_vals(agg_kernel_results, cs.get_num_chiplets())
+        # if total_exe == 0 or total_energy == 0:
+        #     out["F"] = [10e6, 10e6]
+        # else:
+
         result_file = OUTPUT_DIR + "/points.csv"
-        entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']},{source}\n"
-        # Check if entry already exists
-        exists = False
-        try:
-            with open(result_file, "r") as f:
-                for line in f:
-                    if line.strip() == entry.strip():
-                        exists = True
-                        break
-        except FileNotFoundError:
-            pass  # File does not exist yet
+        algorithm_label = source
+        objective_entry = ",".join([str(results.get(problem.name_to_index[obj], 0)) for obj in objectives])
+        total_exe = results.get(problem.name_to_index.get("Runtime"), 0.0)
+        total_energy = results.get(problem.name_to_index.get("Energy"), 0.0)
+        entry = f"{objective_entry},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']},{algorithm_label}\n"
 
-        if not exists:
-            with open(result_file, "a") as f:
-                f.write(entry)
-                print(f"Summary saved to {result_file}")
+        # Always append to points.csv (even duplicates) so evaluation order is preserved
+        # for hypervolume curve reconstruction in compare_optimizers.py
+        with open(result_file, "a") as f:
+            f.write(entry)
+            print(f"Summary saved to {result_file}")
 
-            context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+        # Only write the heavy context JSON if this is a new unique design
+        context_file = (
+            OUTPUT_DIR + "/pointContext/"
+            + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+        )
+        if not os.path.exists(context_file):
             os.makedirs(os.path.dirname(context_file), exist_ok=True)
             with open(context_file, "w") as f:
                 jsonData = []
@@ -364,9 +363,39 @@ def runSingleCascade(chiplets = {"Attention": 3, "Convolution": 3, "GPU": 3, "Sp
                     jsonData.append(resultCopy)
                 json.dump(jsonData, f, indent=4)
             print(f"Results saved to {context_file}")
-
         else:
-            print(f"Entry already exists in {result_file}, not writing duplicate.")
+            print(f"Context file already exists, skipping JSON write.")
+        # result_file = OUTPUT_DIR + "/points.csv"
+        # entry = f"{total_exe},{total_energy},{chiplets['GPU']},{chiplets['Attention']},{chiplets['Sparse']},{chiplets['Convolution']},{source}\n"
+        # # Check if entry already exists
+        # exists = False
+        # try:
+        #     with open(result_file, "r") as f:
+        #         for line in f:
+        #             if line.strip() == entry.strip():
+        #                 exists = True
+        #                 break
+        # except FileNotFoundError:
+        #     pass  # File does not exist yet
+
+        # if not exists:
+        #     with open(result_file, "a") as f:
+        #         f.write(entry)
+        #         print(f"Summary saved to {result_file}")
+
+        #     context_file = OUTPUT_DIR + "/pointContext/" + f"{chiplets['GPU']}gpu{chiplets['Attention']}attn{chiplets['Sparse']}sparse{chiplets['Convolution']}conv.json"
+        #     os.makedirs(os.path.dirname(context_file), exist_ok=True)
+        #     with open(context_file, "w") as f:
+        #         jsonData = []
+        #         for ind, result in enumerate(agg_kernel_results):
+        #             resultCopy = deepcopy(result)
+        #             resultCopy["kernal_number"] = ind
+        #             jsonData.append(resultCopy)
+        #         json.dump(jsonData, f, indent=4)
+        #     print(f"Results saved to {context_file}")
+
+        # else:
+        #     print(f"Entry already exists in {result_file}, not writing duplicate.")
     else:
         print("Skipping CSV save for custom design evaluation")
 

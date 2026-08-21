@@ -30,6 +30,8 @@ urlpatterns = [
 
     # ── Reports ───────────────────────────────────────────────────────────────
     path('generate-report/',                reports.generate_report,                name='generate_report'),
+    path('generate-optimization-report/',   reports.generate_report,                name='generate_optimization_report'),
+    path('generate-comparative-report/',    reports.generate_comparative_report,    name='generate_comparative_report'),
     path('get-previous-run-report/',        reports.get_previous_run_report,        name='get_previous_run_report'),
     path('list-backup-files/',              reports.list_backup_files,              name='list_backup_files'),
     path('load-previous-run/',              reports.load_previous_run,              name='load_previous_run'),

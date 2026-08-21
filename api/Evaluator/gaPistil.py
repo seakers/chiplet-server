@@ -86,6 +86,7 @@ class PistilProblem(ElementwiseProblem):
         if allowed_num_cus is None:
             # Default reasonable Pistil-friendly CU counts (must be multiple of 4)
             allowed_num_cus = [16, 32, 64, 96, 128]
+            # allowed_num_cus = [64]
 
         self.model_name = model_name
         self.allowed_num_cus = sorted(set(int(v) for v in allowed_num_cus if v % 4 == 0))
@@ -328,14 +329,15 @@ class PistilProblem(ElementwiseProblem):
         num_layers = float(metrics.get("num_layers", 1.0))
         sim_num_layers = float(metrics.get("sim_num_layers", -1.0))
         batch_size = float(metrics.get("batch_size", params["batch_size"]))
+        num_chiplets = float(metrics.get("num_chiplets", params["num_cus"]))
 
         # Scale if simulation only ran subset of layers
         if sim_num_layers != num_layers and sim_num_layers != -1:
             latency_ms = total_latency_s * num_layers / sim_num_layers * 1000.0
-            energy_mJ = total_energy_J * num_layers / sim_num_layers * 1000.0
+            energy_mJ = total_energy_J * num_layers / sim_num_layers * 1000.0 * num_chiplets
         else:
             latency_ms = total_latency_s * 1000.0
-            energy_mJ = total_energy_J * 1000.0
+            energy_mJ = total_energy_J * 1000.0 * num_chiplets
 
         # Compute derived metrics
         latency_per_token_ms = latency_ms / batch_size if batch_size > 0 else 0.0

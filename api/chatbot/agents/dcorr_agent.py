@@ -38,8 +38,25 @@ class DistanceCorrelationAgent(BaseAgent):
                     error="No points data found"
                 )
 
+            # NEW: restrict to highlighted/selected indices if provided
+            selected_indices = context.get('selected_indices')
+            use_all = bool(context.get('use_all_points', True))  # Default to True if not specified
+            subset_note = ""
+            if selected_indices and not use_all:
+                idx_set = set(selected_indices)
+                points = [p for i, p in enumerate(points) if i in idx_set]
+                subset_note = f" (restricted to {len(points)} selected points)"
+                if len(points) < 5:
+                    return AgentResult(
+                        success=False,
+                        message=f"Only {len(points)} highlighted points — need at least 5 for "
+                                f"meaningful distance correlation. Ask user to expand selection "
+                                f"or set use_all_points=true.",
+                        error="Selection too small"
+                    )
+
             analyzer = DistanceCorrelationAnalyzer(self.evaluator)
-            objectives = context.get('objectives')   # friendly names
+            objectives = context.get('objectives')
 
             # Pass friendly names through; analyzer.analyze_from_points
             # (updated in step 2) handles the field mapping itself.
@@ -50,9 +67,10 @@ class DistanceCorrelationAgent(BaseAgent):
 
             return AgentResult(
                 success=True,
-                message=self._format_correlation_message(results),
+                message=("Distance correlation analysis" + subset_note + ":\n\n"
+                        + self._format_correlation_message(results)),
                 data=results,
-            )
+)
 
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -69,11 +87,18 @@ class DistanceCorrelationAgent(BaseAgent):
                 "objectives": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "description": "Friendly objective names to analyze."
+                },
+                "use_all_points": {
+                    "type": "boolean",
                     "description": (
-                        "Friendly objective names to analyze, e.g. "
-                        "['Energy', 'Runtime'] for CASCADE or "
-                        "['Latency per Token', 'Energy per Inference'] for PISTIL."
+                        "If true, ignore the current highlighted selection and use ALL "
+                        "points. Default is true (use all points). Set to false to restrict analysis to the current highlighted points. "
+                        "If the user wants a CUSTOM selection different from current "
+                        "highlights, do NOT set this — instead call highlighting_agent "
+                        "first to re-highlight, then call this agent."
                     ),
+                    "default": True
                 }
             },
             "required": [],

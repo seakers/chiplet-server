@@ -28,8 +28,8 @@ class EvaluationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Pistil discrete choices (mirrors PistilProblem in gaPistil.py)
     # ------------------------------------------------------------------
-    PISTIL_TMAC_CHOICES        = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
-    PISTIL_MEM_BUF_CHOICES     = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    PISTIL_TMAC_CHOICES        = [2, 4, 8, 12, 16]
+    PISTIL_MEM_BUF_CHOICES     = [0.25, 0.5, 0.75, 1.0]
     PISTIL_BANK_GROUP_CHOICES  = [1, 2, 3, 4]
     PISTIL_RANK_CHOICES        = [1, 2, 3, 4]
     PISTIL_FRAC_BANK_CHOICES   = [0.5, 0.75, 1.0]
@@ -45,10 +45,17 @@ class EvaluationAgent(BaseAgent):
     @property
     def description(self) -> str:
         return (
-            "Evaluates a chiplet design configuration and returns energy and runtime objectives. "
-            "Supports two evaluators: 'cascade' (requires 12 chiplets across GPU, Attention, "
-            "Sparse, and Convolution types) and 'pistil' (evaluates continuous hardware "
-            "parameters such as CU count, TMACs, and memory configuration for a named LLM model)."
+            f"Evaluates a chiplet design configuration and returns objective values. "
+            f"The CURRENT evaluator is '{self.evaluator.upper()}'. "
+            f"For CASCADE, supply 'chiplets' dict with GPU/Attention/Sparse/Convolution (must sum to 12) "
+            f"and optionally a 'trace'. "
+            f"For PISTIL, supply 'pistil_params' with num_cus, num_tmacs, mem_buf_cap, net_buf_cap, "
+            f"mem_banks_per_group, mem_ranks, mem_frac_bank_cap, batch_size, kv_cache, and optionally 'model_name'. "
+            f"You MAY propose a new design yourself — use rule mining or distance correlation insights to "
+            f"choose chiplet ratios / Pistil parameters that are likely to be Pareto-optimal."
+            f"IMPORTANT: If a design is returned as INFEASIBLE, you MUST modify the "
+            f"design parameters before retrying — never submit the identical configuration again. "
+            f"Use rule mining or distance correlation insights to guide the perturbation."
         )
 
     def execute(self, context: Dict[str, Any]) -> AgentResult:
@@ -85,7 +92,7 @@ class EvaluationAgent(BaseAgent):
         except Exception as e:
             return AgentResult(
                 success=False,
-                message=f"Error during evaluation: {str(e)}",
+                message=f"This design is INFEASIBLE. Please try a slightly different design. Error message: {str(e)}",
                 error=str(e)
             )
 
@@ -94,7 +101,24 @@ class EvaluationAgent(BaseAgent):
     # ==================================================================
 
     def _execute_cascade(self, context: Dict[str, Any]) -> AgentResult:
-        trace = context.get("trace", "gpt-j-65536-weighted")
+        
+        meta = self._get_run_metadata()
+        trace = (
+            context.get("trace")
+            or meta.get("trace_name")
+            or "gpt-j-65536-weighted"
+        )
+
+        if not trace and self.run_id:
+            try:
+                from api.models import OptimizationRun
+                run = OptimizationRun.objects.filter(run_id=self.run_id).first()
+                if run and getattr(run, 'trace_name', None):
+                    trace = run.trace_name
+            except Exception as e:
+                print(f"[EvaluationAgent] Could not look up run trace: {e}")
+        if not trace:
+            trace = "gpt-j-65536-weighted"
 
         chiplets = context.get("chiplets")
         if not chiplets:
@@ -144,7 +168,7 @@ class EvaluationAgent(BaseAgent):
             "sparse":     chiplets["Sparse"],
             "conv":       chiplets["Convolution"],
             "trace":      trace,
-            "algorithm":  "Custom",
+            "algorithm":  "Chatbot",
         }
 
         return AgentResult(
@@ -158,8 +182,29 @@ class EvaluationAgent(BaseAgent):
     # ==================================================================
 
     def _execute_pistil(self, context: Dict[str, Any]) -> AgentResult:
-        model_name = context.get("model_name", "llama3-8b")
-        output_dir = context.get("output_dir", None)
+
+        meta = self._get_run_metadata()
+
+        # Priority: explicit override > active run's trace_name > safe default
+        model_name = (
+            context.get("model_name")
+            or context.get("trace_or_model")
+            or meta.get("trace_name")
+            or "llama3-8b"
+        )
+        if not meta.get('trace_name'):
+            print(f"[EvaluationAgent] No active PISTIL run found; using default model '{model_name}'.")
+
+        # Route the eval to the ACTIVE run's directory so the plot polling picks it up
+        output_dir = meta.get('output_dir')
+        if output_dir is None:
+            run_id = context.get('run_id') or getattr(self, 'run_id', None)
+            if run_id:
+                from api.config.settings import get_results_dir
+                output_dir = get_results_dir('pistil', run_id)  # .../dse/results/<run_id>
+                import os
+                os.makedirs(output_dir, exist_ok=True)
+                print(f"[EvaluationAgent] Resolved output_dir from run_id: {output_dir}")
 
         pistil_params = context.get("pistil_params")
         if not pistil_params:
@@ -195,12 +240,11 @@ class EvaluationAgent(BaseAgent):
             os.makedirs(output_dir, exist_ok=True)
             print(f"[EvaluationAgent] output_dir was None, defaulting to: {output_dir}")
 
-        print("D ", pistil_params)
         from api.config.objectives import OBJECTIVE_FIELD_MAP
         objectives = context.get('objectives') or ['Latency per Token', 'Energy per Inference']
-        metrics = self._run_pistil(pistil_params, output_dir, objectives)
+        pistil_params["model"] = model_name
+        metrics = self._run_pistil(pistil_params, output_dir=output_dir, objectives=objectives)
 
-        print("E ", objectives)
 
         # Build objective results dynamically from whatever objectives were requested
         objective_results = {}
@@ -221,7 +265,7 @@ class EvaluationAgent(BaseAgent):
             "num_tmacs":   pistil_params["num_tmacs"],
             "batch_size":  pistil_params["batch_size"],
             "kv_cache":    pistil_params["kv_cache"],
-            "algorithm":   "Custom",
+            "algorithm":   "Chatbot",
             # Preserve full metrics for callers that want them
             "metrics":   metrics,
         }
@@ -372,7 +416,7 @@ class EvaluationAgent(BaseAgent):
     # Evaluator calls
     # ==================================================================
 
-    def _run_cascade(self, chiplets: Dict[str, int], trace: str):
+    def _run_cascade(self, chiplets: Dict[str, int], trace: str, output_dir: Optional[str] = None):
         from api.Evaluator.gaCascade import runSingleCascade
         return runSingleCascade(chiplets, trace, save_to_csv=True, source='Chatbot')
 
@@ -397,15 +441,36 @@ class EvaluationAgent(BaseAgent):
         # Build a minimal PistilProblem just for its simulator and metrics loader.
         # num_cus from params is the only CU we need; supply it as the sole allowed value
         # so bounds are well-defined without affecting anything else.
-        print("1")
-        print("Pistil Setup Params:", params['model'], params['num_cus'], output_dir)
+        params = dict(params)  # don't mutate caller's dict
+        
+        if (str(params.get("prefill")) == "False"
+                and int(params.get("prefill_cached", 0)) == 0
+                and int(params.get("kv_cache", 0)) > 0):
+            params["prefill_cached"] = 1
+            print("[EvaluationAgent] Pre-flight: set prefill_cached=1 to avoid seq_len=0 crash")
+
+        from api.Evaluator.gaPistil import _round_to_nearest
+        # Snap to the same discrete choices the GA uses, so chatbot-proposed
+        # values land on valid, tested design points.
         problem = PistilProblem(
             model_name=params["model"],
             allowed_num_cus=[params["num_cus"]],
             output_dir=output_dir,
             objectives=objectives
         )
-        print("2")
+        problem.algorithm_label = "Chatbot"
+        if hasattr(problem, 'BATCH_CHOICES'):
+            params["batch_size"] = int(_round_to_nearest(params["batch_size"], problem.BATCH_CHOICES))
+            params["kv_cache"]   = int(_round_to_nearest(params["kv_cache"],   problem.KV_CACHE_CHOICES))
+
+        # Guard: kv_cache drives random_tokens_init -> seq_len. A zero (or boundary)
+        # value produces prefill_input_ids of shape (1, 0) and crashes write_kv [22].
+        valid_kv = [k for k in problem.KV_CACHE_CHOICES if k > 0]
+        if int(params.get("kv_cache", 0)) <= 0 and valid_kv:
+            params["kv_cache"] = int(min(valid_kv))
+            print(f"[EvaluationAgent] Pre-flight: forced kv_cache to {params['kv_cache']} (was <= 0)")
+
+        print("Pistil Setup Params:", params['model'], params['num_cus'], output_dir)
         # Inject fixed/default constants that gaPistil always adds (mirrors _decode_vector)
         full_params = dict(params)
         full_params.setdefault("w_dtype", 0.5)
@@ -422,12 +487,56 @@ class EvaluationAgent(BaseAgent):
 
         print("Running Pistil simulation with params:", full_params)
 
-        print("3")
-        problem.sim.run_dse_point(full_params)
-        print("4")
+        try:
+            problem.sim.run_dse_point(full_params)
+        except RuntimeError as e:
+            if "non-singleton dimension" in str(e) or "seq_len" in str(e):
+                return AgentResult(
+                    success=False,
+                    message=(
+                        "That Pistil configuration hit an invalid sequence-length "
+                        "edge case in the simulator (often caused by a kv_cache value "
+                        "at the boundary). Try a different kv_cache or batch_size."
+                    ),
+                    error=str(e)
+                )
+            raise
+
         metrics = problem._load_all_metrics(full_params)
         problem._save_to_points_csv(full_params, metrics)
         return metrics
+
+    def _get_run_metadata(self) -> dict:
+        """
+        Look up the active OptimizationRun's metadata. Returns dict with:
+            model (CASCADE/PISTIL), trace_name (or LLM model for PISTIL),
+            output_dir (absolute path to the run's results dir), objectives.
+        Returns empty dict if run_id is missing or not found.
+        """
+        if not self.run_id:
+            return {}
+        try:
+            from api.models import OptimizationRun
+            import sys
+            from pathlib import Path
+
+            run = OptimizationRun.objects.filter(run_id=self.run_id).first()
+            if not run:
+                return {}
+
+            meta = {
+                'model': run.model,
+                'trace_name': run.trace_name,
+                'objectives': run.objectives,
+            }
+            if run.model == 'PISTIL':
+                meta['output_dir'] = str(
+                    Path(sys.path[0]) / "api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results" / self.run_id
+                )
+            return meta
+        except Exception as e:
+            print(f"[EvaluationAgent] Could not look up run metadata: {e}")
+            return {}
 
     # ==================================================================
     # Formatting
@@ -494,7 +603,7 @@ class EvaluationAgent(BaseAgent):
                     "description": "(Pistil) Hardware configuration for the Pistil simulator",
                     "properties": {
                         "num_cus":             {"type": "integer",
-                                               "description": "Number of compute units (positive multiple of 4)"},
+                                               "description": "Number of Compute Units (CUs) — one of [16, 32, 64, 96, 128]"},
                         "num_tmacs":           {"type": "integer",
                                                "description": f"TMACs — one of {self.PISTIL_TMAC_CHOICES}"},
                         "mem_buf_cap":         {"type": "number",
@@ -508,9 +617,9 @@ class EvaluationAgent(BaseAgent):
                         "mem_frac_bank_cap":   {"type": "number",
                                                "description": f"Fractional bank capacity — one of {self.PISTIL_FRAC_BANK_CHOICES}"},
                         "batch_size":          {"type": "integer",
-                                               "description": "Batch size (power of 2)"},
+                                               "description": "Batch size (power of 2) between 1 and 64"},
                         "kv_cache":            {"type": "integer",
-                                               "description": "KV cache size (power of 2)"},
+                                               "description": "KV cache size (power of 2) between 1024 and 8192"},
                     },
                     "required": [
                         "num_cus", "num_tmacs", "mem_buf_cap", "net_buf_cap",

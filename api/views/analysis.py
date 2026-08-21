@@ -33,67 +33,57 @@ def rule_mining(request):
         pareto_end_rank   = int(request.GET.get("paretoEndRank", 3))
         evaluator = request.GET.get("evaluator", "cascade")
         run_id    = request.GET.get("run_id")
+        file_path = request.GET.get("file_path")
 
-        # New: explicit objective list from frontend
+        # NEW: comma-separated list of integer indices from the frontend
+        selected_indices_raw = request.GET.get("selected_indices", "")
+        selected_indices = []
+        if selected_indices_raw:
+            try:
+                selected_indices = [int(x) for x in selected_indices_raw.split(",") if x.strip() != ""]
+            except ValueError:
+                return Response({"error": "selected_indices must be a comma-separated list of integers."}, status=400)
+
         objectives_param = request.GET.get("objectives")
         requested_objectives = (
             [o.strip() for o in objectives_param.split(",")]
-            if objectives_param else None
+            if objectives_param
+            else DEFAULT_OBJECTIVES.get(evaluator.lower(), [])
         )
-        # Fallback: read obj0_name / obj1_name (legacy)
-        if not requested_objectives:
-            legacy = []
-            for i in range(3):
-                name = request.GET.get(f"obj{i}_name")
-                if name:
-                    legacy.append(name)
-            if legacy:
-                requested_objectives = legacy
-
-        # Build obj_ranges aligned with requested_objectives
-        obj_ranges = []
-        names_for_ranges = requested_objectives or DEFAULT_OBJECTIVES.get(evaluator.lower(), [])
-        for i, name in enumerate(names_for_ranges):
-            min_val = request.GET.get(f"obj{i}_min")
-            max_val = request.GET.get(f"obj{i}_max")
-            obj_ranges.append({
-                "name": name,
-                "min": float(min_val) if min_val not in (None, "") else None,
-                "max": float(max_val) if max_val not in (None, "") else None,
-            })
-
-        # File path
-        if evaluator.lower() == "pistil":
-            if not run_id:
-                return Response({"error": "run_id is required for PISTIL"}, status=400)
-            file_path = f"api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv"
-        else:
-            file_path = request.GET.get(
-                "file_path",
-                "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
-            )
-
-        if not os.path.exists(file_path):
-            return Response({"error": f"Points file not found: {file_path}"}, status=404)
-
-        # Load + run miner
-        loader = PointsLoader(evaluator, run_id)
-        data = loader.load_deduplicated_data(file_path)
-        if len(data) == 0:
-            return Response({"error": "No valid data for analysis"}, status=400)
 
         # Compute objective column indices into data
         cfg = get_evaluator_config(evaluator)
         all_obj_cols = cfg.objective_columns
         objective_col_indices = None
         if requested_objectives:
-            wanted_fields = to_fields(requested_objectives)
-            objective_col_indices = [cfg.get_objective_index(f) for f in wanted_fields if f in all_obj_cols]
+            if cfg.objectives_first:
+                # CASCADE writes ONLY the selected objectives, in order, as the first columns.
+                # So the indices are simply 0..N-1 — NOT positions in the full config list.
+                objective_col_indices = list(range(len(requested_objectives)))
+            else:
+                # PISTIL: objectives live after decisions at fixed config positions.
+                wanted_fields = to_fields(requested_objectives)
+                objective_col_indices = [cfg.get_objective_index(f) for f in wanted_fields if f in all_obj_cols]
 
-        from api.analysis.rule_mining import RuleMiner
+        # Load + run miner
+        loader = PointsLoader(evaluator, run_id)
+        data = loader.load_points_as_numpy(file_path)
+        if len(data) == 0:
+            return Response({"error": "No valid data for analysis"}, status=400)
+
+        # NEW: if highlighted indices were sent, restrict to those rows as the
+        # point_selection (i.e. these are the "interesting" points whose rules we mine).
+        point_selection = data[np.array(selected_indices)] if selected_indices else None
+
+        data = np.unique(data, axis=0)
+        point_selection = np.unique(point_selection, axis=0) if point_selection is not None else None
+        print(f"data shape: {data.shape}, point_selection shape: {point_selection.shape if point_selection is not None else 'None'}")
+
+
         miner = RuleMiner(evaluator)
         rules = miner.mine_rules(
             data,
+            point_selection=point_selection,
             max_pareto_rank=pareto_end_rank,
             objectives=requested_objectives,
             objective_col_indices=objective_col_indices,
@@ -101,9 +91,10 @@ def rule_mining(request):
 
         return Response({
             "rules": miner.get_rules_as_dicts(rules),
-            "objectives": requested_objectives or names_for_ranges,
+            "objectives": requested_objectives,
             "region": region,
             "pareto_range": [pareto_start_rank, pareto_end_rank],
+            "selection_count": len(selected_indices) if selected_indices else None,
         })
 
     except Exception as e:
@@ -113,51 +104,48 @@ def rule_mining(request):
 
 @api_view(["GET"])
 def distance_correlation(request):
-    """
-    Compute distance correlation between each chiplet/design variable and objectives.
-    Refactored to use centralized analysis classes [1].
-    """
     print("Running Distance Correlation Views")
     evaluator = request.GET.get("evaluator", "CASCADE")
     run_id = request.GET.get("run_id", None)
-    
+    file_path = request.GET.get("file_path", None)
+
     try:
-        objectives_param = request.GET.get("objectives")  # e.g. "Energy,Runtime"
-        requested_objectives = [o.strip() for o in objectives_param.split(",")] if objectives_param else None
-        # Get evaluator config
-        config = get_evaluator_config(evaluator)
-        
-        # Construct file path based on evaluator
-        if evaluator.lower() == 'pistil':
-            if not run_id:
-                return Response({
-                    "error": "run_id is required for PISTIL distance correlation"
-                }, status=400)
-            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv'
-        elif evaluator.lower() == 'cascade':
-            file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
-        else:
-            return Response({"error": f"Unknown evaluator: {evaluator}"}, status=400)
-        
-        if not os.path.exists(file_path):
-            return Response({"error": f"Points file not found: {file_path}"}, status=404)
-        
-        print(f"[distance_correlation] Evaluator: {evaluator}, Using file: {file_path}")
-        
-        # Load data using PointsLoader
+        objectives_param = request.GET.get("objectives")
+        requested_objectives = (
+            [o.strip() for o in objectives_param.split(",")]
+            if objectives_param else None
+        )
+
+        # NEW: parse selected_indices
+        selected_indices_raw = request.GET.get("selected_indices", "")
+        selected_indices = []
+        if selected_indices_raw:
+            try:
+                selected_indices = [int(x) for x in selected_indices_raw.split(",") if x.strip() != ""]
+            except ValueError:
+                return Response({"error": "selected_indices must be a comma-separated list of integers."}, status=400)
+
         loader = PointsLoader(evaluator, run_id)
         points = loader.load_points_as_dicts(file_path)
-        
         if not points:
             return Response({"error": "No valid data available for analysis"}, status=400)
-        
-        # Use DistanceCorrelationAnalyzer
+
+        # NEW: restrict to highlighted subset if provided
+        if selected_indices:
+            valid = [i for i in selected_indices if 0 <= i < len(points)]
+            if len(valid) < 2:
+                return Response({
+                    "error": f"Need at least 2 highlighted points for correlation analysis (got {len(valid)})."
+                }, status=400)
+            points = [points[i] for i in valid]
+            print(f"[distance_correlation] Restricted to {len(points)} highlighted points")
+
         analyzer = DistanceCorrelationAnalyzer(evaluator)
         results = analyzer.analyze_from_points(points, requested_objectives=requested_objectives)
-        
+
         print(f"[distance_correlation] Computed {len(results['correlations'])} correlations")
         return Response(results['correlations'])
-        
+
     except Exception as e:
         import traceback
         print(f"[distance_correlation] Exception: {traceback.format_exc()}")
@@ -200,6 +188,18 @@ def distance_correlation_insights(request):
         
         if not points:
             return Response({"error": "No valid data available for analysis"}, status=400)
+        
+        selected_indices_raw = request.GET.get("selected_indices", "")
+        if selected_indices_raw:
+            try:
+                selected_indices = [int(x) for x in selected_indices_raw.split(",") if x.strip() != ""]
+            except ValueError:
+                return Response({"error": "selected_indices must be a comma-separated list of integers."}, status=400)
+            if selected_indices:
+                valid = [i for i in selected_indices if 0 <= i < len(points)]
+                if len(valid) < 2:
+                    return Response({"error": f"Need at least 2 highlighted points (got {len(valid)})."}, status=400)
+                points = [points[i] for i in valid]
         
         analyzer = DistanceCorrelationAnalyzer(evaluator)
         results = analyzer.analyze_from_points(points, requested_objectives=requested_objectives)
@@ -266,7 +266,7 @@ def distance_correlation_insights(request):
             f"Keep your response focused and to the point."
         )
         
-        ai_insights = chat_bot.get_response(prompt)
+        ai_insights = chat_bot.summarize(prompt)
         
         return Response({
             "correlations": correlations,
@@ -343,7 +343,7 @@ def rule_mining_insights(request):
             f"3. Any rule conflicts or redundancies (if any)\n\n"
             f"Keep your response focused and to the point."
         )
-        response = chat_bot.get_response(prompt)
+        response = chat_bot.summarize(prompt)
 
         return Response({
             "insights": response,

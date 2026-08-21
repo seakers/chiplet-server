@@ -23,7 +23,9 @@ from .agents import (
     RuntimeAnalysisAgent,
     PointInfoAgent,
     EvaluationAgent,
-    HighlightingAgent
+    HighlightingAgent,
+    ReportAgent,
+    ComparativeAnalysisAgent
 )
 from .agents.memory import ConversationMemory
 from .agents.preprocessor import QueryPreprocessor
@@ -74,6 +76,7 @@ class ChatBot:
         self.preprocessor = QueryPreprocessor()
         self.last_agent_results = []
         self.active_objectives = []
+        self.highlighted_indices = []
     
     def _get_default_specs(self) -> List[Dict[str, str]]:
         """Get default system specifications."""
@@ -95,6 +98,8 @@ class ChatBot:
             'point_info_agent': PointInfoAgent(self.evaluator, self.run_id),
             'evaluation_agent': EvaluationAgent(self.evaluator, self.run_id),
             'highlighting_agent': HighlightingAgent(self.evaluator, self.run_id),
+            'report_agent': ReportAgent(self.evaluator, self.run_id),
+            'comparative_analysis_agent': ComparativeAnalysisAgent(self.evaluator, self.run_id),
         }
 
     def _handle_tool_calls(self, message) -> str:
@@ -116,7 +121,15 @@ class ChatBot:
         agent_context = self._build_agent_context()
 
         # Agents that should NEVER be served from cache (results depend on query parameters)
-        NO_CACHE_AGENTS = {'highlighting_agent', 'evaluation_agent'}
+        NO_CACHE_AGENTS = {
+            'highlighting_agent',
+            'evaluation_agent',
+            'dcorr_agent',          # NEW — depends on selected_indices
+            'rule_mining_agent',    # NEW — depends on selected_indices
+            'optimization_agent',   # NEW — never makes sense to cache
+            'report_agent',         # NEW — always generate fresh
+            'comparative_analysis_agent',  # NEW
+        }
 
         for tool_call in message.tool_calls:
             agent_name = tool_call.function.name
@@ -197,8 +210,10 @@ class ChatBot:
             'evaluator':      self.evaluator,
             'run_id':         self.run_id,
             'objectives':     getattr(self, 'active_objectives', None),
+            'trace_or_model':   getattr(self, 'trace_or_model', None),
             'full_data':      self.full_data,
             'point_context':  self.point_context,
+            'selected_indices': getattr(self, 'highlighted_indices', []),
         }
     
 
@@ -386,6 +401,14 @@ class ChatBot:
         except FileNotFoundError:
             print(f"Error: File at {context_file_path} not found.")
             self.point_in_active_context = False
+
+    def set_trace_or_model(self, trace_or_model: str):
+        """
+        Set the trace or model name for Pistil evaluations.
+        Consolidates set_trace_or_model from model.py [2].
+        """
+        self.trace_or_model = trace_or_model
+        print(f"[ChatBot] Trace/Model set to: {trace_or_model}")
     
     def add_run_context(self, 
                         summary_text: str, 
@@ -454,6 +477,17 @@ class ChatBot:
         if result.success:
             return result.data.get('rules_string', result.message)
         return result.message
+
+    def summarize(self, prompt: str) -> str:
+        """Direct LLM completion with NO tool calling — for insight summaries."""
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "developer", "content": SystemPrompts.MAIN_ASSISTANT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return resp.choices[0].message.content
     
     def optimization_manager(self, query: str) -> Dict[str, Any]:
         """

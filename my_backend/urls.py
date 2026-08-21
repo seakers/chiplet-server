@@ -40,4 +40,6 @@ if settings.DEBUG:
     urlpatterns += [
         re_path(r'^api/Evaluator/cascade/chiplet_model/dse/results/reports/(?P<path>.*)$', 
                 serve, {'document_root': 'api/Evaluator/cascade/chiplet_model/dse/results/reports'}),
+        re_path(r'^api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/reports/(?P<path>.*)$',
+                serve, {'document_root': 'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/reports'}),
     ]

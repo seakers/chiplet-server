@@ -47,9 +47,27 @@ class OptimizationAgent(BaseAgent):
             # Get the raw query if provided
             query = context.get('query', '')
             
-            # Parse optimization parameters
-            params = self._parse_optimization_request(query)
-            
+            # Prefer structured params passed by the LLM tool call; fall back to text parsing.
+            structured_keys = ('model', 'algorithm', 'pistil_model', 'traces',
+                               'objectives', 'population_size', 'generations')
+            has_structured = any(context.get(k) not in (None, [], "") for k in structured_keys)
+
+            if has_structured:
+                params = {
+                    "model":           (context.get("model") or "CASCADE").upper(),
+                    "algorithm":       context.get("algorithm") or "Genetic Algorithm",
+                    "population_size": int(context.get("population_size", 50)),
+                    "generations":     int(context.get("generations", 100)),
+                    "objectives":      context.get("objectives") or ["Energy", "Runtime"],
+                    "traces":          context.get("traces") or [{"name": "gpt-j-65536-weighted", "weight": 1.0}],
+                }
+                if context.get("pistil_model"):
+                    params["pistil_model"] = context.get("pistil_model")
+            else:
+                # Legacy path: parse from raw query text
+                query = context.get("query", "")
+                params = self._parse_optimization_request(query)
+
             if params.get('status') == 'error':
                 return AgentResult(
                     success=False,
@@ -59,11 +77,17 @@ class OptimizationAgent(BaseAgent):
             
             # Start the optimization run
             result = self._start_optimization(params)
-            
+            run_id = result.get("run_id")
+
             return AgentResult(
                 success=result.get('status') == 'success',
                 message=result.get('message', 'Optimization started'),
-                data=result
+                data={
+                    'run_id': run_id,
+                    'model':  params.get('model'),
+                    'algorithm': params.get('algorithm'),
+                    'payload': result.get('payload'),
+                }
             )
             
         except Exception as e:
@@ -115,11 +139,11 @@ class OptimizationAgent(BaseAgent):
         if gen_match:
             result["generations"] = int(gen_match.group(1))
         
-        # Parse objectives
+        # Parse objectives — use canonical friendly names that match name_to_index
         if "energy" in query_lower:
-            result["objectives"].append("energy")
+            result["objectives"].append("Energy")
         if "time" in query_lower or "runtime" in query_lower or "latency" in query_lower:
-            result["objectives"].append("time")
+            result["objectives"].append("Runtime")
         
         # Parse traces
         trace_matches = re.findall(r'gpt-[a-z0-9-]+', query_lower)
@@ -132,64 +156,114 @@ class OptimizationAgent(BaseAgent):
         if not result["algorithm"]:
             result["algorithm"] = "Genetic Algorithm"  # Default
         if not result["objectives"]:
-            result["objectives"] = ["energy", "time"]  # Default
+            result["objectives"] = ["Energy", "Runtime"]  # Default
         if not result["traces"]:
             result["traces"] = [{"name": "gpt-j-65536-weighted"}]  # Default
         
         return result
     
     def _start_optimization(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Start the optimization run based on parameters."""
-        from api.Evaluator.gaCascade import runGACascade
-        from api.Evaluator.generator import generate_weighted_trace
-        
-        # Determine trace
-        traces = params.get("traces", [])
-        if len(traces) == 1:
-            trace_name = traces[0].get("name", "gpt-j-65536-weighted")
+        """Start an optimization run using the same backend path as the UI."""
+        from rest_framework.test import APIRequestFactory
+        from api.views.optimization import run_optimization  # the view used by /api/run-optimization/
+
+        # Build a payload matching what ProblemFormulation.vue sends [8]
+        payload = {
+            "model":           params.get("model", "CASCADE"),
+            "algorithm":       params.get("algorithm", "Genetic Algorithm"),
+            "objectives":      params.get("objectives") or ["Energy", "Runtime"],
+            "traces":          params.get("traces") or [{"name": "gpt-j-65536-weighted", "weight": 1.0}],
+            "population_size": params.get("population_size", 50),
+            "generations":     params.get("generations", 100),
+        }
+        if payload["model"] == "PISTIL":
+            payload["pistil_model"] = params.get("pistil_model", "llama3-8b")
+
+        factory = APIRequestFactory()
+        drf_req = factory.post('/api/run-optimization/', payload, format='json')
+        response = run_optimization(drf_req)
+
+        # Robustly read the body for both DRF Response and Django JsonResponse
+        if hasattr(response, 'data'):
+            body = response.data
         else:
-            trace_names = [t.get("name") for t in traces]
-            weights = [t.get("weight", 1.0) for t in traces]
-            trace_name = generate_weighted_trace(trace_names, weights, label='optimization')
-        
-        algorithm = params.get("algorithm", "Genetic Algorithm")
-        
-        if algorithm == "Genetic Algorithm":
-            # Start GA in background thread
-            def run_ga():
-                try:
-                    runGACascade(
-                        pop_size=params.get("population_size", 50),
-                        n_gen=params.get("generations", 100),
-                        trace=trace_name
-                    )
-                except Exception as e:
-                    print(f"GA optimization error: {e}")
-            
-            thread = threading.Thread(target=run_ga, daemon=True)
-            thread.start()
-            
-            return {
-                "status": "success",
-                "message": f"Optimization started using {algorithm} on trace '{trace_name}'",
-                "params": params
-            }
-        
-        elif algorithm == "Full-Factorial":
-            return {
-                "status": "success",
-                "message": f"Full-Factorial optimization would be started on trace '{trace_name}'",
-                "params": params
-            }
-        
-        else:
-            return {
-                "status": "error",
-                "message": f"Unknown algorithm: {algorithm}"
-            }
+            import json as _json
+            try:
+                body = _json.loads(response.content.decode('utf-8'))
+            except Exception:
+                body = {}
+
+        run_id = (
+            body.get('pistil_run_id')
+            or body.get('run_directory')
+            or body.get('run_id')
+            or body.get('deep_rl_run_id')
+        )
+
+        return {
+            "status": "success" if run_id else "error",
+            "message": (
+                f"Started {payload['algorithm']} on {payload['model']} "
+                f"(run_id={run_id}). The plot will populate as points arrive."
+                if run_id else
+                f"Failed to start optimization: {body.get('error') or body.get('message')}"
+            ),
+            "run_id": run_id,
+            "payload": payload,
+            "response": body,
+        }
     
     def can_handle(self, query: str) -> bool:
         """Check if query is about running optimization."""
         keywords = ['optimize', 'optimization', 'run ga', 'start', 'genetic algorithm', 'full-factorial']
         query_lower = query.lower()
         return any(kw in query_lower for kw in keywords)
+    
+
+    def get_parameters_schema(self) -> dict:
+        """Expose structured optimization parameters to the LLM."""
+        return {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "enum": ["CASCADE", "PISTIL", "HISIM"],
+                    "description": "Which evaluator to run the optimization on."
+                },
+                "algorithm": {
+                    "type": "string",
+                    "enum": ["Genetic Algorithm", "Full-Factorial", "Deep RL"],
+                    "description": "Optimization algorithm to use."
+                },
+                "pistil_model": {
+                    "type": "string",
+                    "description": "For PISTIL runs, the model/workload name (e.g. 'llama3-8b')."
+                },
+                "traces": {
+                    "type": "array",
+                    "description": "For CASCADE runs, list of trace names with optional weights.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name":   {"type": "string"},
+                            "weight": {"type": "number"}
+                        },
+                        "required": ["name"]
+                    }
+                },
+                "objectives": {
+                    "type": "array",
+                    "description": "Objectives to optimize (friendly names, e.g. 'Energy', 'Runtime').",
+                    "items": {"type": "string"}
+                },
+                "population_size": {
+                    "type": "integer",
+                    "description": "GA population size (default 50)."
+                },
+                "generations": {
+                    "type": "integer",
+                    "description": "Number of GA generations (default 100)."
+                }
+            },
+            "required": ["model", "algorithm"]
+        }

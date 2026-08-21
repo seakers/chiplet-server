@@ -8,3 +8,5 @@ from .runtime_analysis_agent import RuntimeAnalysisAgent
 from .point_info_agent import PointInfoAgent
 from .evaluation_agent import EvaluationAgent
 from .highlighting_agent import HighlightingAgent
+from .report_agent import ReportAgent
+from .comparative_agent import ComparativeAnalysisAgent

@@ -46,9 +46,10 @@ class RuleMiner:
     # Feature bins for categorizing design variable values
     FEATURE_BINS = ['none', 'low', 'medium', 'high']
     
-    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.01):
+    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.02):
         self.evaluator = evaluator.lower()
         self.config = get_evaluator_config(evaluator)
+        self.objectives_first = self.config.objectives_first
         self.min_support = min_support
         self.pareto_calculator = ParetoCalculator()
     
@@ -75,23 +76,28 @@ class RuleMiner:
         all_obj_cols = self.config.objective_columns  # internal field names
         num_objectives = len(objective_col_indices) if objective_col_indices else len(objectives) if objectives else len(all_obj_cols)
 
-        point_vals = data[:, -num_objectives:] if self.config.objectives_first else data[:, :num_objectives]
+        point_vals = data[:, objective_col_indices] if objective_col_indices else data[:, :num_objectives]
+        decision_vals = data[:, num_objectives:] if self.objectives_first else data[:, :len(decision_cols)]
         ranks = ParetoCalculator.calculate_pareto_ranks(point_vals)
         
         # Add ranks to data
-        data_with_ranks = np.hstack((data, ranks.reshape(-1, 1)))
+        data_with_ranks = np.hstack((decision_vals, point_vals, ranks.reshape(-1, 1)))
         
         # Select points for analysis
         if point_selection is None:
-            point_selection = data_with_ranks[data_with_ranks[:, -1] < max_pareto_rank]
+            point_selection = data_with_ranks[data_with_ranks[:, -1] < max_pareto_rank, :-1]  # Exclude rank column
+        else:
+            selection_point_vals = point_selection[:, objective_col_indices] if objective_col_indices else point_selection[:, :num_objectives]
+            selection_decision_vals = point_selection[:, num_objectives:] if self.objectives_first else point_selection[:, :len(decision_cols)]
+            point_selection = np.hstack((selection_decision_vals, selection_point_vals))
         
         if len(point_selection) == 0:
             return []
         
         # Build rules dictionary
-        rules_dict = self._build_rules_dict(data_with_ranks, decision_cols, num_objectives)
+        rules_dict = self._build_rules_dict(data_with_ranks, decision_cols, objective_col_indices)
 
-        print("Rules dict built! Keys:", list(rules_dict.keys()))
+        # print("Rules dict built! Keys:", list(rules_dict.keys()))
         
         # Find Pareto-optimal rule combinations
         pfront_rules, pfront_costs, pfront_lifts = self._find_pareto_rules(
@@ -113,30 +119,18 @@ class RuleMiner:
     def _build_rules_dict(self, 
                           data: np.ndarray, 
                           decision_cols: List[str],
-                          num_objectives: int) -> Dict[str, np.ndarray]:
+                          objective_col_indices: List[int]) -> Dict[str, np.ndarray]:
         """
         Build dictionary mapping rule names to matching points.
         
         Rules are defined based on relative ranges of design variables [2].
         """
         rules_dict = {}
-        n_cols = data.shape[1]
-        available_decision_cols = n_cols - num_objectives
+        num_objectives = len(objective_col_indices) if objective_col_indices else 0
+        data = data[:, :-1]  # Exclude Pareto rank column for rule building
 
-        if available_decision_cols <= 0:
-            print(f"[RuleMiner] WARNING: data has {n_cols} cols but {num_objectives} objectives "
-                f"— no decision columns available.")
-            return rules_dict
-
-        # Only iterate over decision columns that actually exist in data
-        actual_decision_cols = decision_cols[:available_decision_cols]
-        if len(actual_decision_cols) < len(decision_cols):
-            print(f"[RuleMiner] WARNING: config has {len(decision_cols)} decision cols "
-                f"but data only has {available_decision_cols}. "
-                f"Using: {actual_decision_cols}")
-
-        for chip_idx, col_name in enumerate(actual_decision_cols):
-            col_idx = chip_idx + num_objectives
+        for chip_idx, col_name in enumerate(decision_cols):
+            col_idx = chip_idx + num_objectives if self.objectives_first else chip_idx
             col_data = data[:, col_idx]
             
             val_min = np.min(col_data)
@@ -172,7 +166,7 @@ class RuleMiner:
         pfront_costs = np.array([]).reshape(0, 2)
         pfront_lifts = np.array([]).reshape(0, 1)
         base_rule: Set[str] = set()
-        
+
         pfront_rules, pfront_costs, pfront_lifts = self._add_rules(
             rules_dict, point_selection, pfront_rules, 
             pfront_costs, pfront_lifts, base_rule, full_data

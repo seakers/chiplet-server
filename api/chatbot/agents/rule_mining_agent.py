@@ -28,26 +28,43 @@ class RuleMiningAgent(BaseAgent):
             loader = PointsLoader(self.evaluator, self.run_id)
             objectives = context.get('objectives')
             data = loader.load_deduplicated_data()
-            max_pareto_rank = context.get('max_pareto_rank', 3)
-            print(f"Max Pareto Rank for Rule Mining: {max_pareto_rank}")
+            max_pareto_rank = context.get('max_pareto_rank', 3) # this will be a fallback
 
             if len(data) == 0:
                 return AgentResult(success=False, message="No data available.", error="No points data found")
 
-            # Compute objective column indices but do NOT slice data here —
-            # pass indices to mine_rules so it can project internally.
+            # NEW: restrict to highlighted/selected indices if provided
+            selected_indices = context.get('selected_indices')
+            point_selection = None
+            if selected_indices:
+                valid = [i for i in selected_indices if 0 <= i < len(data)]
+                if len(valid) < 3:
+                    return AgentResult(
+                        success=False,
+                        message=f"Only {len(valid)} highlighted points — need at least 3 for rule mining. "
+                                f"Expand the selection or set use_all_points=true.",
+                        error="Selection too small"
+                    )
+                point_selection = data[np.array(valid)]
+
+            # Compute objective column indices into data
+            cfg = get_evaluator_config(self.evaluator)
+            all_obj_cols = cfg.objective_columns
             objective_col_indices = None
             if objectives:
-                cfg = get_evaluator_config(self.evaluator)
-                all_obj_cols = cfg.objective_columns
-                wanted_fields = to_fields(objectives)
-                indices = [all_obj_cols.index(f) for f in wanted_fields if f in all_obj_cols]
-                if indices:
-                    objective_col_indices = indices
+                if cfg.objectives_first:
+                    # CASCADE writes ONLY the selected objectives, in order, as the first columns.
+                    # So the indices are simply 0..N-1 — NOT positions in the full config list.
+                    objective_col_indices = list(range(len(objectives)))
+                else:
+                    # PISTIL: objectives live after decisions at fixed config positions.
+                    wanted_fields = to_fields(objectives)
+                    objective_col_indices = [cfg.get_objective_index(f) for f in wanted_fields if f in all_obj_cols]
 
             miner = RuleMiner(self.evaluator)
             rules = miner.mine_rules(
                 data,                                    # ← full data, not pre-sliced
+                point_selection=point_selection,          # ← optional highlighted selection
                 max_pareto_rank=max_pareto_rank,
                 objectives=objectives,
                 objective_col_indices=objective_col_indices,

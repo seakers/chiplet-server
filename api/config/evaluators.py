@@ -63,10 +63,18 @@ PISTIL_CONFIG = EvaluatorConfig(
         'batch_size', 'kv_cache'
     ],
     objective_columns=[
-        'latency_per_token_ms', 'energy_per_inference_mJ', 'energy_per_token_mJ',
-        'average_power_W', 'system_power_W', 'system_cost',
-        'avg_comp_util', 'avg_mem_util', 'prefill_tokens_per_sec',
-        'system_compute_TOPS', 'system_bandwidth_TBps', 'system_capacity_GB'
+        'latency_ms', 'energy_mJ', 'latency_per_token_ms', 'energy_per_inference_mJ', 
+        'energy_per_token_mJ', 'prefill_tokens_per_sec', 'average_power_W', 'system_power_W', 
+        'average_power_mem_W', 'average_power_comp_W', 'average_power_net_W', 'system_cost', 
+        'chiplet_silicon_cost', 'memory_cost_2xHBLC', 'package_cost', 'package_silicon_cost', 
+        'package_memory_cost', 'package_substrate_cost', 'system_silicon_cost', 'system_memory_cost', 
+        'system_substrate_cost', 'system_pcb_cost', 'avg_comp_util', 'avg_mem_util', 
+        'system_compute_TOPS', 'system_bandwidth_TBps', 'system_capacity_GB', 'num_packages', 
+        'num_chiplets', 'hblc_capacity_GB', 'hblc_bandwidth_GBps', 'hblc_bw_per_capacity', 
+        'peak_buffer_MB', 'avg_cache_util_MB', 'model_weight_capacity_GB', 
+        'kv_cache_capacity_per_batch_GB', 'total_model_capacity_GB', 'cores_per_cu', 
+        'mem_buffer_size', 'net_buffer_size', 'tmacs_per_core', 'hblc_bank_groups', 
+        'hblc_ranks', 'hblc_frac_bank_cap', 'algorithm'
     ],
     num_objectives=12,  # total available; user picks ≤3
     csv_has_header=True,

@@ -289,6 +289,42 @@ def run_cascade_rl(
     return objectives
 
 
+def run_cascade_llm(
+    output_dir: str,
+    pop_size: int = 10,
+    n_gen: int = 5,
+    trace: str = "gpt-j-65536-weighted",
+    llm_model: str = "gpt-5.4-mini",
+) -> np.ndarray:
+    """
+    Run the Cascade LLM-guided optimizer and return all evaluated objective
+    points (N, 2) in evaluation order, read back from points.csv.
+    """
+    from llm_optimizer import runLLMCascade
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"[CASCADE LLM] pop_size={pop_size}, n_gen={n_gen}, trace={trace}")
+    print(f"  llm_model:  {llm_model}")
+    print(f"  output_dir: {output_dir}")
+    print(f"{'='*60}")
+
+    runLLMCascade(
+        pop_size=pop_size,
+        n_gen=n_gen,
+        trace=trace,
+        llm_model=llm_model,
+        output_dir=output_dir,
+    )
+
+    csv_path = os.path.join(output_dir, "points.csv")
+    objectives = read_points_csv_cascade(csv_path)
+    print(f"[CASCADE LLM] Read {len(objectives)} points from {csv_path}")
+    return objectives
+
+
+
 # ---------------------------------------------------------------------------
 # ── PISTIL runners ───────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -428,6 +464,47 @@ def run_pistil_random(
     print(f"[PISTIL RS] Read {len(objectives)} points from {csv_path}")
     return objectives
 
+
+def run_pistil_llm(
+    output_dir: str,
+    pop_size: int = 10,
+    n_gen: int = 5,
+    model_name: str = "llama3-8b",
+    llm_model: str = "gpt-5.4-mini",
+    allowed_num_cus: list = None,
+    batch_bounds: tuple = (1, 64),
+    kv_cache_bounds: tuple = (1024, 8192),
+) -> np.ndarray:
+    """
+    Run the Pistil LLM-guided optimizer and return all evaluated objective
+    points (N, 2) in evaluation order, read back from points.csv.
+    """
+    from llm_optimizer import runLLMPistil
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"[PISTIL LLM] pop_size={pop_size}, n_gen={n_gen}, model={model_name}")
+    print(f"  llm_model:  {llm_model}")
+    print(f"  output_dir: {output_dir}")
+    print(f"{'='*60}")
+
+    runLLMPistil(
+        pop_size=pop_size,
+        n_gen=n_gen,
+        model_name=model_name,
+        llm_model=llm_model,
+        allowed_num_cus=allowed_num_cus,
+        batch_bounds=batch_bounds,
+        kv_cache_bounds=kv_cache_bounds,
+        output_dir=output_dir,
+    )
+
+    csv_path = os.path.join(output_dir, "points.csv")
+    objectives = read_points_csv_pistil(csv_path)
+    print(f"[PISTIL LLM] Read {len(objectives)} points from {csv_path}")
+    return objectives
+
 # ---------------------------------------------------------------------------
 # ── Plotting ─────────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -436,18 +513,21 @@ def run_pistil_random(
 COLORS = {
     "GA": "#2196F3",   # blue
     "RL": "#F44336",   # red
+    "LLM": "#FF9800",  # orange
     "RS": "#4CAF50",   # green  ← ADD
 }
 
 MARKERS = {
     "GA": "o",
     "RL": "s",
+    "LLM": "d",
     "RS": "^",   # ← ADD
 }
 
 LINE_STYLES = {
     "GA": "-",
     "RL": "--",
+    "LLM": "-.",
     "RS": ":",   # ← ADD
 }
 
@@ -458,6 +538,7 @@ def plot_hv_comparison(
     ref_point: np.ndarray,
     title: str,
     save_path: str,
+    llm_objectives: np.ndarray = None,   # ← ADD optional LLM
     rs_objectives: np.ndarray = None,   # ← ADD optional RS
 ) -> None:
     ga_evals, ga_hvs = hv_curve(ga_objectives, ref_point)
@@ -488,6 +569,16 @@ def plot_hv_comparison(
             label=f"RS  (final HV={rs_hvs[-1]:.3e})" if rs_hvs else "RS",
         )
 
+    # plot LLM curve when provided
+    if llm_objectives is not None and len(llm_objectives) > 0:
+        llm_evals, llm_hvs = hv_curve(llm_objectives, ref_point)
+        ax.plot(
+            llm_evals, llm_hvs,
+            color=COLORS["LLM"], linestyle=LINE_STYLES["LLM"],
+            marker=MARKERS["LLM"], markersize=4, linewidth=2,
+            label=f"LLM  (final HV={llm_hvs[-1]:.3e})" if llm_hvs else "LLM",
+        )
+
     ax.set_xlabel("Number of Function Evaluations", fontsize=13)
     ax.set_ylabel("Hypervolume Indicator", fontsize=13)
     ax.set_title(title, fontsize=14, fontweight="bold")
@@ -509,6 +600,7 @@ def plot_pareto_fronts(
     save_path: str,
     xlabel: str = "Latency / Execution Time (ms)",
     ylabel: str = "Energy (mJ)",
+    llm_objectives: np.ndarray = None,   # ← ADD optional LLM
     rs_objectives: np.ndarray = None,   # ← ADD optional RS
 ) -> None:
     fig, ax = plt.subplots(figsize=(9, 6))
@@ -540,6 +632,10 @@ def plot_pareto_fronts(
     if rs_objectives is not None and len(rs_objectives) > 0:
         _plot_method(rs_objectives, "RS", COLORS["RS"], MARKERS["RS"])
 
+    # plot LLM when provided
+    if llm_objectives is not None and len(llm_objectives) > 0:
+        _plot_method(llm_objectives, "LLM", COLORS["LLM"], MARKERS["LLM"])
+
     ax.set_xlabel(xlabel, fontsize=13)
     ax.set_ylabel(ylabel, fontsize=13)
     ax.set_title(title, fontsize=14, fontweight="bold")
@@ -556,55 +652,14 @@ def plot_pareto_fronts(
 # ---------------------------------------------------------------------------
 
 def main():
-    # parser = argparse.ArgumentParser(
-    #     description="Compare GA vs RL on CASCADE and PISTIL chiplet design models."
-    # )
-    # parser.add_argument("--cascade-only", action="store_true",
-    #                     help="Only run CASCADE experiments.")
-    # parser.add_argument("--pistil-only", action="store_true",
-    #                     help="Only run PISTIL experiments.")
-    # parser.add_argument("--skip-run", action="store_true",
-    #                     help="Skip running optimizers; load existing points.csv files.")
-    # parser.add_argument("--output-dir", type=str, default="comparison_results",
-    #                     help="Root directory for all outputs (CSVs + plots).")
 
-    # # ── CASCADE hyperparameters ──────────────────────────────────────────────
-    # parser.add_argument("--cascade-trace", type=str,
-    #                     default="gpt-j-65536-weighted",
-    #                     help="Cascade trace name (no path, no .json).")
-    # parser.add_argument("--cascade-ga-pop", type=int, default=10,
-    #                     help="Cascade GA population size.")
-    # parser.add_argument("--cascade-ga-gen", type=int, default=5,
-    #                     help="Cascade GA number of generations.")
-    # parser.add_argument("--cascade-rl-epochs", type=int, default=10,
-    #                     help="Cascade RL number of epochs.")
-    # parser.add_argument("--cascade-rl-batch", type=int, default=5,
-    #                     help="Cascade RL mini-batch size.")
-
-    # # ── PISTIL hyperparameters ───────────────────────────────────────────────
-    # parser.add_argument("--pistil-model", type=str, default="llama3-8b",
-    #                     help="Pistil model name (e.g. llama3-8b).")
-    # parser.add_argument("--pistil-ga-pop", type=int, default=10,
-    #                     help="Pistil GA population size.")
-    # parser.add_argument("--pistil-ga-gen", type=int, default=5,
-    #                     help="Pistil GA number of generations.")
-    # parser.add_argument("--pistil-rl-epochs", type=int, default=10,
-    #                     help="Pistil RL number of epochs.")
-    # parser.add_argument("--pistil-rl-batch", type=int, default=5,
-    #                     help="Pistil RL mini-batch size.")
-    # parser.add_argument("--pistil-batch-min", type=int, default=1)
-    # parser.add_argument("--pistil-batch-max", type=int, default=64)
-    # parser.add_argument("--pistil-kv-min", type=int, default=1024)
-    # parser.add_argument("--pistil-kv-max", type=int, default=8192)
-
-    # args = parser.parse_args()
-    param_a = 75
-    param_b = 16
+    param_a = 5
+    param_b = 4
 
     args = {
         "cascade_only": False,
         "pistil_only": True,
-        "skip_run": True,
+        "skip_run": False,
         "output_dir": "comparison_results",
         "cascade_trace": "gpt-j-65536-weighted",
         "cascade_ga_pop": param_a,
@@ -617,8 +672,8 @@ def main():
         "pistil_rl_epochs": param_a,
         "pistil_rl_batch": param_b,
         "pistil_batch_min": 1,
-        "pistil_batch_max": 64,
-        "pistil_kv_min": 1024,
+        "pistil_batch_max": 1,
+        "pistil_kv_min": 8192,
         "pistil_kv_max": 8192,
         "pistil_rs_samples": param_a * param_b,
     }
@@ -633,6 +688,8 @@ def main():
     pistil_ga_dir   = root / "pistil"  / "ga"
     pistil_rl_dir   = root / "pistil"  / "rl"
     pistil_rs_dir   = root / "pistil"  / "rs"
+    cascade_llm_dir = root / "cascade" / "llm"
+    pistil_llm_dir  = root / "pistil"  / "llm"
     plots_dir       = root / "plots"
 
     for d in [cascade_ga_dir, cascade_rl_dir,
@@ -645,6 +702,7 @@ def main():
     # =========================================================================
     cascade_ga_obj = np.empty((0, 2))
     cascade_rl_obj = np.empty((0, 2))
+    cascade_llm_obj = np.empty((0, 2))
 
     if run_cascade:
         print("\n" + "#" * 70)
@@ -676,11 +734,24 @@ def main():
                 warnings.warn(f"[CASCADE RL] Run failed: {exc}")
                 import traceback; traceback.print_exc()
 
+            # ---------- LLM ----------
+            try:
+                cascade_llm_obj = run_cascade_llm(
+                    output_dir=str(cascade_llm_dir),
+                    pop_size=args['cascade_ga_pop'],
+                    n_gen=args['cascade_ga_gen'],
+                    trace=args['cascade_trace'],
+                )
+            except Exception as exc:
+                warnings.warn(f"[CASCADE LLM] Run failed: {exc}")
+                import traceback; traceback.print_exc()
+
         else:
             # ── Load from existing CSV files ──────────────────────────────────
             print("[CASCADE] --skip-run: loading existing points.csv files …")
             cascade_ga_csv = cascade_ga_dir / "points.csv"
             cascade_rl_csv = cascade_rl_dir / "points.csv"
+            cascade_llm_csv = cascade_llm_dir / "points.csv"
             if cascade_ga_csv.exists():
                 cascade_ga_obj = read_points_csv_cascade(str(cascade_ga_csv))
                 print(f"  GA:  {len(cascade_ga_obj)} points loaded from {cascade_ga_csv}")
@@ -691,9 +762,14 @@ def main():
                 print(f"  RL:  {len(cascade_rl_obj)} points loaded from {cascade_rl_csv}")
             else:
                 warnings.warn(f"[CASCADE RL] CSV not found: {cascade_rl_csv}")
+            if cascade_llm_csv.exists():
+                cascade_llm_obj = read_points_csv_cascade(str(cascade_llm_csv))
+                print(f"  LLM: {len(cascade_llm_obj)} points loaded from {cascade_llm_csv}")
+            else:
+                warnings.warn(f"[CASCADE LLM] CSV not found: {cascade_llm_csv}")
 
         # ── Compute shared reference point ────────────────────────────────────
-        all_cascade = [o for o in [cascade_ga_obj, cascade_rl_obj] if len(o) > 0]
+        all_cascade = [o for o in [cascade_ga_obj, cascade_rl_obj, cascade_llm_obj] if len(o) > 0]
         if all_cascade:
             cascade_ref = reference_point(all_cascade, margin=1.1)
             print(f"\n[CASCADE] Reference point: {cascade_ref}")
@@ -704,6 +780,7 @@ def main():
             plot_hv_comparison(
                 ga_objectives=cascade_ga_obj,
                 rl_objectives=cascade_rl_obj,
+                llm_objectives=cascade_llm_obj,
                 ref_point=cascade_ref,
                 title="CASCADE – Hypervolume vs. Function Evaluations",
                 save_path=hv_plot_path,
@@ -715,7 +792,8 @@ def main():
             plot_pareto_fronts(
                 ga_objectives=cascade_ga_obj,
                 rl_objectives=cascade_rl_obj,
-                title="CASCADE – Pareto Front (GA vs. RL)",
+                llm_objectives=cascade_llm_obj,
+                title="CASCADE – Pareto Front (GA vs. RL vs. LLM)",
                 save_path=pf_plot_path,
                 xlabel="Execution Time (ms)",
                 ylabel="Energy (mJ)",
@@ -728,6 +806,7 @@ def main():
     # =========================================================================
     pistil_ga_obj = np.empty((0, 2))
     pistil_rl_obj = np.empty((0, 2))
+    pistil_llm_obj = np.empty((0, 2))
     pistil_rs_obj = np.empty((0, 2))
 
     pistil_batch_bounds  = (args['pistil_batch_min'], args['pistil_batch_max'])
@@ -766,6 +845,18 @@ def main():
             except Exception as exc:
                 warnings.warn(f"[PISTIL RL] Run failed: {exc}")
                 import traceback; traceback.print_exc()
+                
+            # ---------- LLM ----------
+            try:
+                pistil_llm_obj = run_pistil_llm(
+                    output_dir=str(pistil_llm_dir),
+                    pop_size=args['pistil_ga_pop'],
+                    n_gen=args['pistil_ga_gen'],
+                    model_name=args['pistil_model'],
+                )
+            except Exception as exc:
+                warnings.warn(f"[PISTIL LLM] Run failed: {exc}")
+                import traceback; traceback.print_exc()
 
             # ---------- Random Search ----------
             try:
@@ -786,6 +877,7 @@ def main():
             pistil_ga_csv = pistil_ga_dir / "points.csv"
             pistil_rl_csv = pistil_rl_dir / "points.csv"
             pistil_rs_csv = pistil_rs_dir / "points.csv"
+            pistil_llm_csv = pistil_llm_dir / "points.csv"
             if pistil_ga_csv.exists():
                 pistil_ga_obj = read_points_csv_pistil(str(pistil_ga_csv))
                 print(f"  GA:  {len(pistil_ga_obj)} points loaded from {pistil_ga_csv}")
@@ -801,14 +893,19 @@ def main():
                 print(f"  RS:  {len(pistil_rs_obj)} points loaded from {pistil_rs_csv}")
             else:
                 warnings.warn(f"[PISTIL RS] CSV not found: {pistil_rs_csv}")
-
+            if pistil_llm_csv.exists():
+                pistil_llm_obj = read_points_csv_pistil(str(pistil_llm_csv))
+                print(f"  LLM: {len(pistil_llm_obj)} points loaded from {pistil_llm_csv}")
+            else:
+                warnings.warn(f"[PISTIL LLM] CSV not found: {pistil_llm_csv}")
     # ── Compute shared reference point ────────────────────────────────────────
-    all_pistil = [o for o in [pistil_ga_obj, pistil_rl_obj, pistil_rs_obj] if len(o) > 0]
+    all_pistil = [o for o in [pistil_ga_obj, pistil_rl_obj, pistil_rs_obj, pistil_llm_obj] if len(o) > 0]
     if all_pistil:
         # Log-transform PISTIL objectives for plotting and HV calculation
         # Raw values are saved to CSV; log values are only used for comparison
         pistil_ga_log = log_transform_objectives(pistil_ga_obj)
         pistil_rl_log = log_transform_objectives(pistil_rl_obj)
+        pistil_llm_log = log_transform_objectives(pistil_llm_obj)
         pistil_rs_log = log_transform_objectives(pistil_rs_obj)
 
         pistil_ref = reference_point([pistil_ga_log, pistil_rl_log, pistil_rs_log], margin=1.1)
@@ -820,6 +917,7 @@ def main():
         plot_hv_comparison(
             ga_objectives=pistil_ga_log,
             rl_objectives=pistil_rl_log,
+            llm_objectives=pistil_llm_log,
             rs_objectives=pistil_rs_log,
             ref_point=pistil_ref,
             title="PISTIL – Hypervolume vs. Function Evaluations (log₁₀ objectives)",
@@ -832,8 +930,9 @@ def main():
         plot_pareto_fronts(
             ga_objectives=pistil_ga_log,
             rl_objectives=pistil_rl_log,
+            llm_objectives=pistil_llm_log,
             rs_objectives=pistil_rs_log,
-            title="PISTIL – Pareto Front GA vs. RL vs. RS (log₁₀ objectives)",
+            title="PISTIL – Pareto Front GA vs. RL vs. RS vs. LLM (log₁₀ objectives)",
             save_path=pf_plot_path,
             xlabel="log₁₀(Latency) [log ms]",
             ylabel="log₁₀(Energy) [log mJ]",
@@ -853,19 +952,22 @@ def main():
         ga_obj: np.ndarray,
         rl_obj: np.ndarray,
         ref: np.ndarray | None,
+        llm_obj: np.ndarray = None,          # ADD
         rs_obj: np.ndarray = None,          # ADD
         hv_ga_obj: np.ndarray = None,
         hv_rl_obj: np.ndarray = None,
+        hv_llm_obj: np.ndarray = None,       # ADD
         hv_rs_obj: np.ndarray = None,       # ADD
     ) -> None:
         """Print a compact comparison table for one simulator."""
         hv_ga_src = hv_ga_obj if hv_ga_obj is not None else ga_obj
         hv_rl_src = hv_rl_obj if hv_rl_obj is not None else rl_obj
+        hv_llm_src = hv_llm_obj if hv_llm_obj is not None else (llm_obj if llm_obj is not None else np.empty((0, 2)))  # ADD
         hv_rs_src = hv_rs_obj if hv_rs_obj is not None else (rs_obj if rs_obj is not None else np.empty((0, 2)))  # ADD
 
         # CHANGE: widen the header to include RS column
         print(f"\n  {name}")
-        print(f"  {'Metric':<35} {'GA':>14}  {'RL':>14}  {'RS':>14}")
+        print(f"  {'Metric':<35} {'GA':>14}  {'RL':>14}  {'RS':>14}  {'LLM':>14}")
         print(f"  {'-'*79}")
 
         def stat(arr, col):
@@ -878,17 +980,21 @@ def main():
 
         # CHANGE: add RS column to every printed row
         rs_len = len(rs_obj) if rs_obj is not None else 0
-        print(f"  {'# evaluations':<35} {len(ga_obj):>14}  {len(rl_obj):>14}  {rs_len:>14}")
+        llm_len = len(llm_obj) if llm_obj is not None else 0
+        print(f"  {'# evaluations':<35} {len(ga_obj):>14}  {len(rl_obj):>14}  {rs_len:>14}  {llm_len:>14}")
         print(f"  {'Best latency/exe-time (ms)':<35} "
               f"{stat(ga_obj, 0):>14}  {stat(rl_obj, 0):>14}  "
-              f"{stat(rs_obj, 0) if rs_obj is not None else 'N/A':>14}")
+              f"{stat(rs_obj, 0) if rs_obj is not None else 'N/A':>14}  "
+              f"{stat(llm_obj, 0) if llm_obj is not None else 'N/A':>14}")
         print(f"  {'Best energy (mJ)':<35} "
               f"{stat(ga_obj, 1):>14}  {stat(rl_obj, 1):>14}  "
-              f"{stat(rs_obj, 1) if rs_obj is not None else 'N/A':>14}")
+              f"{stat(rs_obj, 1) if rs_obj is not None else 'N/A':>14}  "
+              f"{stat(llm_obj, 1) if llm_obj is not None else 'N/A':>14}")
 
         if ref is not None:
             ga_hv = "N/A"
             rl_hv = "N/A"
+            llm_hv = "N/A"  # ADD
             rs_hv = "N/A"  # ADD
             if len(hv_ga_src) > 0:
                 pf = pareto_filter(hv_ga_src)
@@ -900,8 +1006,12 @@ def main():
             if len(hv_rs_src) > 0:
                 pf = pareto_filter(hv_rs_src)
                 rs_hv = f"{compute_hypervolume(pf, ref):.4e}"
+            # ADD: LLM hypervolume
+            if len(hv_llm_src) > 0:
+                pf = pareto_filter(hv_llm_src)
+                llm_hv = f"{compute_hypervolume(pf, ref):.4e}"
             print(f"  {'Final hypervolume (log scale)':<35} "
-                  f"{ga_hv:>14}  {rl_hv:>14}  {rs_hv:>14}")
+                  f"{ga_hv:>14}  {rl_hv:>14}  {rs_hv:>14}  {llm_hv:>14}")
 
         if len(ga_obj) > 0:
             pf_size = len(pareto_filter(ga_obj))
@@ -913,6 +1023,10 @@ def main():
         if rs_obj is not None and len(rs_obj) > 0:
             pf_size = len(pareto_filter(rs_obj))
             print(f"  {'RS Pareto front size':<35} {pf_size:>14}")
+        # ADD: LLM Pareto front size
+        if llm_obj is not None and len(llm_obj) > 0:
+            pf_size = len(pareto_filter(llm_obj))
+            print(f"  {'LLM Pareto front size':<35} {pf_size:>14}")
 
     if run_cascade:
         # CASCADE has no RS, so rs_obj stays None (backward-compatible)
@@ -921,14 +1035,16 @@ def main():
             cascade_ga_obj,
             cascade_rl_obj,
             cascade_ref if (len(cascade_ga_obj) > 0 or len(cascade_rl_obj) > 0) else None,
+            llm_obj=cascade_llm_obj,
         )
 
     if run_pistil:
         pistil_ga_log = log_transform_objectives(pistil_ga_obj)
         pistil_rl_log = log_transform_objectives(pistil_rl_obj)
+        pistil_llm_log = log_transform_objectives(pistil_llm_obj)  # ADD
         pistil_rs_log = log_transform_objectives(pistil_rs_obj)  # ADD
 
-        all_log = [arr for arr in [pistil_ga_log, pistil_rl_log, pistil_rs_log]  # CHANGE
+        all_log = [arr for arr in [pistil_ga_log, pistil_rl_log, pistil_rs_log, pistil_llm_log]  # CHANGE
                    if len(arr) > 0]
         pistil_ref_for_summary = (
             reference_point(all_log, margin=1.1) if all_log else None
@@ -940,10 +1056,12 @@ def main():
             pistil_ga_obj,
             pistil_rl_obj,
             pistil_ref_for_summary,
+            llm_obj=pistil_llm_obj,         # ADD
             rs_obj=pistil_rs_obj,           # ADD
             hv_ga_obj=pistil_ga_log,
             hv_rl_obj=pistil_rl_log,
             hv_rs_obj=pistil_rs_log,        # ADD
+            hv_llm_obj=pistil_llm_log,      # ADD
         )
 
     print(f"\nAll plots written to: {plots_dir.resolve()}")

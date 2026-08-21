@@ -50,11 +50,18 @@ def chat(request):
         evaluator = data.get("evaluator") or request.GET.get("evaluator", "cascade")
         run_id    = data.get("run_id")    or request.GET.get("run_id")
         objectives= data.get("objectives") or request.GET.get("objectives")
+        highlighted_indices = data.get("highlighted_indices") or []
+        trace_or_model = data.get("trace_or_model") or request.GET.get("trace_or_model")
 
         bot = get_chatbot(evaluator, run_id)
 
         if objectives:
             bot.set_objectives(objectives)
+
+        if trace_or_model:
+            bot.set_trace_or_model(trace_or_model)
+
+        bot.highlighted_indices = list(highlighted_indices) if highlighted_indices else []
 
         role    = data.get("role", "user")
         content = data.get("content", "")
@@ -91,6 +98,23 @@ def chat(request):
                     'type': 'highlight_points',
                     'data': result.data or {}
                 })
+            elif agent_name == 'optimization_agent':
+                if result.data and result.data.get('run_id'):
+                    frontend_actions.append({
+                        'type': 'start_optimization',
+                        'data': result.data
+                    })
+            elif agent_name == 'report_agent':
+                frontend_actions.append({
+                    'type': 'report_generated',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'comparative_analysis_agent':
+                if result.data:
+                    frontend_actions.append({
+                        'type': 'comparative_analysis_result',
+                        'data': result.data
+                    })
         bot.last_agent_results = []  # Clear after reading
         print(f"Frontend actions: {frontend_actions}")
         
@@ -159,6 +183,7 @@ def add_run_context(request):
         objectives = data.get("objectives")
         evaluator = data.get("evaluator", "cascade")
         run_id = data.get("run_id", None)
+        trace_or_model = data.get("trace_or_model", None)
 
         if not summary_text:
             return Response({"error": "summary_text is required"}, status=400)
@@ -337,6 +362,7 @@ def get_chat_response(request):
     evaluator = request.GET.get("evaluator", "cascade")
     run_id    = request.GET.get("run_id", None)
     use_retrieval = request.GET.get("use_retrieval", "false").lower() in ("1", "true", "yes")
+    trace_or_model = request.GET.get("trace_or_model", None)
     # Support objectives passed as either a single param or as an array (objectives[])
     # e.g. ?objectives=foo or ?objectives[]=a&objectives[]=b
     if "objectives[]" in request.GET:
@@ -352,6 +378,9 @@ def get_chat_response(request):
 
     if objectives:
         bot.set_objectives(objectives)
+
+    if trace_or_model:
+        bot.set_trace_or_model(trace_or_model)
 
     try:
         # Collect optional filters
@@ -404,6 +433,23 @@ def get_chat_response(request):
                     'type': 'highlight_points',
                     'data': result.data or {}
                 })
+            elif agent_name == 'optimization_agent':
+                if result.data and result.data.get('run_id'):
+                    frontend_actions.append({
+                        'type': 'start_optimization',
+                        'data': result.data
+                    })
+            elif agent_name == 'report_agent':
+                frontend_actions.append({
+                    'type': 'report_generated',
+                    'data': result.data or {}
+                })
+            elif agent_name == 'comparative_analysis_agent':
+                if result.data:
+                    frontend_actions.append({
+                        'type': 'comparative_analysis_result',
+                        'data': result.data
+                    })
         bot.last_agent_results = []
 
         return Response({"response": response, "frontend_actions": frontend_actions})

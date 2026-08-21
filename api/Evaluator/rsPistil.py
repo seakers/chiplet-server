@@ -274,13 +274,14 @@ class PistilRandomSearcher:
         num_layers       = float(metrics.get("num_layers", 1.0))
         sim_num_layers   = float(metrics.get("sim_num_layers", -1.0))
         batch_size       = float(metrics.get("batch_size", params["batch_size"]))
+        num_chiplets     = float(metrics.get("num_chiplets", params["num_cus"]))
 
         if sim_num_layers != num_layers and sim_num_layers != -1:
             latency_ms = total_latency_s * num_layers / sim_num_layers * 1000.0
-            energy_mJ  = total_energy_J  * num_layers / sim_num_layers * 1000.0
+            energy_mJ  = total_energy_J  * num_layers / sim_num_layers * 1000.0 * num_chiplets
         else:
             latency_ms = total_latency_s * 1000.0
-            energy_mJ  = total_energy_J  * 1000.0
+            energy_mJ  = total_energy_J  * 1000.0 * num_chiplets
 
         latency_per_token_ms    = latency_ms / batch_size if batch_size > 0 else 0.0
         energy_per_token_mJ     = energy_mJ  / batch_size if batch_size > 0 else 0.0
