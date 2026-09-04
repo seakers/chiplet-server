@@ -32,6 +32,22 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+import gc
+import datetime
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+def force_clear_memory():
+    """Aggressively free memory between optimizers (ported from main.py [1])."""
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
+
 # ---------------------------------------------------------------------------
 # Hypervolume helper (uses pymoo's built-in)
 # ---------------------------------------------------------------------------
@@ -653,8 +669,8 @@ def plot_pareto_fronts(
 
 def main():
 
-    param_a = 5
-    param_b = 4
+    param_a = 2
+    param_b = 2
 
     args = {
         "cascade_only": False,
@@ -804,21 +820,43 @@ def main():
     # =========================================================================
     # 2.  PISTIL
     # =========================================================================
-    pistil_ga_obj = np.empty((0, 2))
-    pistil_rl_obj = np.empty((0, 2))
+    pistil_ga_obj  = np.empty((0, 2))
+    pistil_rl_obj  = np.empty((0, 2))
     pistil_llm_obj = np.empty((0, 2))
-    pistil_rs_obj = np.empty((0, 2))
+    pistil_rs_obj  = np.empty((0, 2))
 
-    pistil_batch_bounds  = (args['pistil_batch_min'], args['pistil_batch_max'])
-    pistil_kv_bounds     = (args['pistil_kv_min'],   args['pistil_kv_max'])
+    pistil_batch_bounds = (args['pistil_batch_min'], args['pistil_batch_max'])
+    pistil_kv_bounds    = (args['pistil_kv_min'],   args['pistil_kv_max'])
+
+    # Datestring root — mirrors results/{date_str}/ from main.py [1]
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    results_root = Path("results") / date_str
+    results_root.mkdir(parents=True, exist_ok=True)
+    print(f"[compare_optimizers] Results root: {results_root}")
+
+    pistil_ga_dir  = results_root / "pistil_ga"
+    pistil_rl_dir  = results_root / "pistil_rl"
+    pistil_rs_dir  = results_root / "pistil_rs"
+    pistil_llm_dir = results_root / "pistil_llm"
+
+    def _load_or_none(d):
+        """Resume helper: return objectives from an existing points.csv, else None."""
+        csv_path = os.path.join(str(d), "points.csv")
+        if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+            objs = read_points_csv_pistil(csv_path)
+            print(f"[RESUME] Loaded {len(objs)} points from {csv_path} (skipping run)")
+            return objs
+        return None
 
     if run_pistil:
         print("\n" + "#" * 70)
         print("#  PISTIL")
         print("#" * 70)
 
-        if not args['skip_run']:
-            # ---------- GA ----------
+        # ---------- GA ----------
+        force_clear_memory()
+        pistil_ga_obj = _load_or_none(pistil_ga_dir)
+        if pistil_ga_obj is None and not args['skip_run']:
             try:
                 pistil_ga_obj = run_pistil_ga(
                     output_dir=str(pistil_ga_dir),
@@ -831,8 +869,14 @@ def main():
             except Exception as exc:
                 warnings.warn(f"[PISTIL GA] Run failed: {exc}")
                 import traceback; traceback.print_exc()
+        elif pistil_ga_obj is None:
+            pistil_ga_obj = np.empty((0, 2))
+        force_clear_memory()
 
-            # ---------- RL ----------
+        # ---------- RL ----------
+        force_clear_memory()
+        pistil_rl_obj = _load_or_none(pistil_rl_dir)
+        if pistil_rl_obj is None and not args['skip_run']:
             try:
                 pistil_rl_obj = run_pistil_rl(
                     output_dir=str(pistil_rl_dir),
@@ -845,20 +889,14 @@ def main():
             except Exception as exc:
                 warnings.warn(f"[PISTIL RL] Run failed: {exc}")
                 import traceback; traceback.print_exc()
-                
-            # ---------- LLM ----------
-            try:
-                pistil_llm_obj = run_pistil_llm(
-                    output_dir=str(pistil_llm_dir),
-                    pop_size=args['pistil_ga_pop'],
-                    n_gen=args['pistil_ga_gen'],
-                    model_name=args['pistil_model'],
-                )
-            except Exception as exc:
-                warnings.warn(f"[PISTIL LLM] Run failed: {exc}")
-                import traceback; traceback.print_exc()
+        elif pistil_rl_obj is None:
+            pistil_rl_obj = np.empty((0, 2))
+        force_clear_memory()
 
-            # ---------- Random Search ----------
+        # ---------- Random Search ----------
+        force_clear_memory()
+        pistil_rs_obj = _load_or_none(pistil_rs_dir)
+        if pistil_rs_obj is None and not args['skip_run']:
             try:
                 pistil_rs_obj = run_pistil_random(
                     output_dir=str(pistil_rs_dir),
@@ -870,75 +908,91 @@ def main():
             except Exception as exc:
                 warnings.warn(f"[PISTIL RS] Run failed: {exc}")
                 import traceback; traceback.print_exc()
+        elif pistil_rs_obj is None:
+            pistil_rs_obj = np.empty((0, 2))
+        force_clear_memory()
 
-        else:
-            # ── Load from existing CSV files ──────────────────────────────────
-            print("[PISTIL] --skip-run: loading existing points.csv files …")
-            pistil_ga_csv = pistil_ga_dir / "points.csv"
-            pistil_rl_csv = pistil_rl_dir / "points.csv"
-            pistil_rs_csv = pistil_rs_dir / "points.csv"
-            pistil_llm_csv = pistil_llm_dir / "points.csv"
-            if pistil_ga_csv.exists():
-                pistil_ga_obj = read_points_csv_pistil(str(pistil_ga_csv))
-                print(f"  GA:  {len(pistil_ga_obj)} points loaded from {pistil_ga_csv}")
-            else:
-                warnings.warn(f"[PISTIL GA] CSV not found: {pistil_ga_csv}")
-            if pistil_rl_csv.exists():
-                pistil_rl_obj = read_points_csv_pistil(str(pistil_rl_csv))
-                print(f"  RL:  {len(pistil_rl_obj)} points loaded from {pistil_rl_csv}")
-            else:
-                warnings.warn(f"[PISTIL RL] CSV not found: {pistil_rl_csv}")
-            if pistil_rs_csv.exists():
-                pistil_rs_obj = read_points_csv_pistil(str(pistil_rs_csv))
-                print(f"  RS:  {len(pistil_rs_obj)} points loaded from {pistil_rs_csv}")
-            else:
-                warnings.warn(f"[PISTIL RS] CSV not found: {pistil_rs_csv}")
-            if pistil_llm_csv.exists():
-                pistil_llm_obj = read_points_csv_pistil(str(pistil_llm_csv))
-                print(f"  LLM: {len(pistil_llm_obj)} points loaded from {pistil_llm_csv}")
-            else:
-                warnings.warn(f"[PISTIL LLM] CSV not found: {pistil_llm_csv}")
-    # ── Compute shared reference point ────────────────────────────────────────
-    all_pistil = [o for o in [pistil_ga_obj, pistil_rl_obj, pistil_rs_obj, pistil_llm_obj] if len(o) > 0]
-    if all_pistil:
-        # Log-transform PISTIL objectives for plotting and HV calculation
-        # Raw values are saved to CSV; log values are only used for comparison
-        pistil_ga_log = log_transform_objectives(pistil_ga_obj)
-        pistil_rl_log = log_transform_objectives(pistil_rl_obj)
-        pistil_llm_log = log_transform_objectives(pistil_llm_obj)
-        pistil_rs_log = log_transform_objectives(pistil_rs_obj)
+        # ---------- LLM ----------
+        force_clear_memory()
+        pistil_llm_obj = _load_or_none(pistil_llm_dir)
+        if pistil_llm_obj is None and not args['skip_run']:
+            try:
+                from llm_optimizer import LLMOptimizer
+                os.makedirs(str(pistil_llm_dir), exist_ok=True)
+                llm_opt = LLMOptimizer(
+                    evaluator="pistil",
+                    model=args['llm_model'],
+                    output_dir=str(pistil_llm_dir),
+                    model_name=args['pistil_model'],
+                    batch_bounds=pistil_batch_bounds,
+                    kv_cache_bounds=pistil_kv_bounds,
+                )
+                pistil_llm_obj = llm_opt.run(
+                    pop_size=args['pistil_llm_pop'],
+                    n_gen=args['pistil_llm_gen'],
+                )
+                # Prefer reading back from the full-schema points.csv so the
+                # LLM objectives are reconstructed identically to the other
+                # optimizers [2][3].
+                llm_csv = os.path.join(str(pistil_llm_dir), "points.csv")
+                if os.path.exists(llm_csv) and os.path.getsize(llm_csv) > 0:
+                    pistil_llm_obj = read_points_csv_pistil(llm_csv)
+                del llm_opt
+            except Exception as exc:
+                warnings.warn(f"[PISTIL LLM] Run failed: {exc}")
+                import traceback; traceback.print_exc()
+        elif pistil_llm_obj is None:
+            pistil_llm_obj = np.empty((0, 2))
+        force_clear_memory()
 
-        pistil_ref = reference_point([pistil_ga_log, pistil_rl_log, pistil_rs_log], margin=1.1)
-        print(f"\n[PISTIL] Reference point (log10 scale): {pistil_ref}")
-
-        # ── Plot 3 – Hypervolume vs. Evaluations (log scale) ─────────────────
-        hv_plot_path = str(plots_dir / "pistil_hypervolume.png")
-        print("\n[PISTIL] Building hypervolume curves (log10 objectives) …")
-        plot_hv_comparison(
-            ga_objectives=pistil_ga_log,
-            rl_objectives=pistil_rl_log,
-            llm_objectives=pistil_llm_log,
-            rs_objectives=pistil_rs_log,
-            ref_point=pistil_ref,
-            title="PISTIL – Hypervolume vs. Function Evaluations (log₁₀ objectives)",
-            save_path=hv_plot_path,
-        )
-
-        # ── Plot 4 – Pareto Front (log scale) ────────────────────────────────
-        pf_plot_path = str(plots_dir / "pistil_pareto_front.png")
-        print("[PISTIL] Building Pareto-front plot (log10 objectives) …")
-        plot_pareto_fronts(
-            ga_objectives=pistil_ga_log,
-            rl_objectives=pistil_rl_log,
-            llm_objectives=pistil_llm_log,
-            rs_objectives=pistil_rs_log,
-            title="PISTIL – Pareto Front GA vs. RL vs. RS vs. LLM (log₁₀ objectives)",
-            save_path=pf_plot_path,
-            xlabel="log₁₀(Latency) [log ms]",
-            ylabel="log₁₀(Energy) [log mJ]",
-        )
     else:
-        warnings.warn("[PISTIL] No objectives collected – skipping plots.")
+        # ── Load from existing CSV files (--skip-run) ──────────────────
+        print("[PISTIL] --skip-run: loading existing points.csv files …")
+        pistil_ga_csv  = pistil_ga_dir  / "points.csv"
+        pistil_rl_csv  = pistil_rl_dir  / "points.csv"
+        pistil_rs_csv  = pistil_rs_dir  / "points.csv"
+        pistil_llm_csv = pistil_llm_dir / "points.csv"
+
+        if pistil_ga_csv.exists():
+            pistil_ga_obj = read_points_csv_pistil(str(pistil_ga_csv))
+            print(f"  GA:  {len(pistil_ga_obj)} points loaded from {pistil_ga_csv}")
+        else:
+            warnings.warn(f"[PISTIL GA] CSV not found: {pistil_ga_csv}")
+
+        if pistil_rl_csv.exists():
+            pistil_rl_obj = read_points_csv_pistil(str(pistil_rl_csv))
+            print(f"  RL:  {len(pistil_rl_obj)} points loaded from {pistil_rl_csv}")
+        else:
+            warnings.warn(f"[PISTIL RL] CSV not found: {pistil_rl_csv}")
+
+        if pistil_rs_csv.exists():
+            pistil_rs_obj = read_points_csv_pistil(str(pistil_rs_csv))
+            print(f"  RS:  {len(pistil_rs_obj)} points loaded from {pistil_rs_csv}")
+        else:
+            warnings.warn(f"[PISTIL RS] CSV not found: {pistil_rs_csv}")
+
+        if pistil_llm_csv.exists():
+            pistil_llm_obj = read_points_csv_pistil(str(pistil_llm_csv))
+            print(f"  LLM: {len(pistil_llm_obj)} points loaded from {pistil_llm_csv}")
+        else:
+            warnings.warn(f"[PISTIL LLM] CSV not found: {pistil_llm_csv}")
+
+    # ── Compute shared reference point ────────────────────────────────
+    force_clear_memory()
+    all_pistil = [o for o in [pistil_ga_obj, pistil_rl_obj,
+                              pistil_rs_obj, pistil_llm_obj] if len(o) > 0]
+    if all_pistil:
+        # Raw values are saved to CSV; log values are only used for comparison [2]
+        pistil_ga_log  = log_transform_objectives(pistil_ga_obj)
+        pistil_rl_log  = log_transform_objectives(pistil_rl_obj)
+        pistil_llm_log = log_transform_objectives(pistil_llm_obj)
+        pistil_rs_log  = log_transform_objectives(pistil_rs_obj)
+
+        pistil_ref = reference_point(
+            [pistil_ga_log, pistil_rl_log, pistil_rs_log, pistil_llm_log],
+            margin=1.1,
+        )
+        print(f"\n[PISTIL] Reference point (log10 scale): {pistil_ref}")
 
     # =========================================================================
     # 3.  Summary table

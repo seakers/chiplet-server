@@ -122,13 +122,14 @@ class LLMOptimizer:
     # ------------------------------------------------------------------ #
     # Evaluation — delegate to EvaluationAgent (handles snapping + infeasible)
     # ------------------------------------------------------------------ #
+
     def _evaluate_design(self, design: Dict[str, Any]) -> List[float]:
         if self.evaluator == "cascade":
             ctx = {"chiplets": design, "trace": self.trace,
-                "objectives": self.objectives}
+                   "objectives": self.objectives}
         else:
             ctx = {"pistil_params": design, "model_name": self.model_name,
-                "output_dir": self.output_dir, "objectives": self.objectives}
+                   "output_dir": self.output_dir, "objectives": self.objectives}
 
         result = self._eval_agent.execute(ctx)
         if not result.success:
@@ -137,14 +138,9 @@ class LLMOptimizer:
         data = result.data or {}
 
         if self.evaluator == "cascade":
-            # EvaluationAgent returns flat keys "exe_time" and "energy",
-            # plus "objectives" as a NAME-keyed dict. raw_objectives order
-            # is [energy, runtime], so read the flat keys explicitly and
-            # emit [exe_time, energy] to match the CSV/plot convention. [10][1]
             exe_time = data.get("exe_time")
             energy = data.get("energy")
             if exe_time is None or energy is None:
-                # Fallback: pull from the name-keyed objectives dict
                 obj_dict = data.get("objectives", {})
                 exe_time = obj_dict.get("Runtime")
                 energy = obj_dict.get("Energy")
@@ -152,21 +148,100 @@ class LLMOptimizer:
                 return FAILED_OBJ
             return [float(exe_time), float(energy)]
 
-        # PISTIL path — verify these keys against your _execute_pistil return!
-        lat = data.get("latency_ms")
-        eng = data.get("energy_mJ")
+        # PISTIL path — align with EvaluationAgent._execute_pistil return keys.
+        # The agent stores latency_ms under "exe_time" and energy_mJ under
+        # "energy" (backward-compat flat keys), NOT "latency_ms"/"energy_mJ".
+        lat = data.get("exe_time")
+        eng = data.get("energy")
         if lat is None or eng is None:
             obj_dict = data.get("objectives", {})
-            lat = obj_dict.get("Latency per Token", obj_dict.get("latency_ms"))
-            eng = obj_dict.get("Energy per Inference", obj_dict.get("energy_mJ"))
+            lat = obj_dict.get("Latency per Token")
+            eng = obj_dict.get("Energy per Inference")
+        if lat is None or eng is None:
+            m = data.get("metrics", {})
+            lat = m.get("latency_ms")
+            eng = m.get("energy_mJ")
         if lat is None or eng is None:
             return FAILED_OBJ
         return [float(lat), float(eng)]
 
+    # ---- full-schema CSV writing (mirrors gaPistil._save_to_points_csv [3]) ----
+    _PISTIL_DECISION_COLS = [
+        "num_cus", "num_tmacs", "mem_buf_cap", "net_buf_cap",
+        "mem_banks_per_group", "mem_ranks", "mem_frac_bank_cap",
+        "batch_size", "kv_cache",
+    ]
+
     def _record(self, design: Dict[str, Any], obj: List[float]):
         self.all_designs.append(design)
         self.all_objectives.append(obj)
-        self._append_csv(obj)
+        self._append_csv(design, obj)
+
+    def _append_csv(self, design: Dict[str, Any], obj: List[float]):
+        write_header = not os.path.exists(self.points_csv_path) \
+            or os.path.getsize(self.points_csv_path) == 0
+
+        if self.evaluator == "pistil":
+            header = self._PISTIL_DECISION_COLS + list(self.objectives) + ["algorithm"]
+            row = [design.get(c) for c in self._PISTIL_DECISION_COLS] \
+                + [obj[0], obj[1]] + ["LLM"]
+        else:
+            header = ["GPU", "Attention", "Sparse", "Convolution"] \
+                + list(self.objectives) + ["algorithm"]
+            row = [design.get("GPU"), design.get("Attention"),
+                   design.get("Sparse"), design.get("Convolution")] \
+                + [obj[0], obj[1]] + ["LLM"]
+
+        with open(self.points_csv_path, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(header)
+            w.writerow(row)
+    # def _evaluate_design(self, design: Dict[str, Any]) -> List[float]:
+    #     if self.evaluator == "cascade":
+    #         ctx = {"chiplets": design, "trace": self.trace,
+    #             "objectives": self.objectives}
+    #     else:
+    #         ctx = {"pistil_params": design, "model_name": self.model_name,
+    #             "output_dir": self.output_dir, "objectives": self.objectives}
+
+    #     result = self._eval_agent.execute(ctx)
+    #     if not result.success:
+    #         return FAILED_OBJ
+
+    #     data = result.data or {}
+
+    #     if self.evaluator == "cascade":
+    #         # EvaluationAgent returns flat keys "exe_time" and "energy",
+    #         # plus "objectives" as a NAME-keyed dict. raw_objectives order
+    #         # is [energy, runtime], so read the flat keys explicitly and
+    #         # emit [exe_time, energy] to match the CSV/plot convention. [10][1]
+    #         exe_time = data.get("exe_time")
+    #         energy = data.get("energy")
+    #         if exe_time is None or energy is None:
+    #             # Fallback: pull from the name-keyed objectives dict
+    #             obj_dict = data.get("objectives", {})
+    #             exe_time = obj_dict.get("Runtime")
+    #             energy = obj_dict.get("Energy")
+    #         if exe_time is None or energy is None:
+    #             return FAILED_OBJ
+    #         return [float(exe_time), float(energy)]
+
+    #     # PISTIL path — verify these keys against your _execute_pistil return!
+    #     lat = data.get("latency_ms")
+    #     eng = data.get("energy_mJ")
+    #     if lat is None or eng is None:
+    #         obj_dict = data.get("objectives", {})
+    #         lat = obj_dict.get("Latency per Token", obj_dict.get("latency_ms"))
+    #         eng = obj_dict.get("Energy per Inference", obj_dict.get("energy_mJ"))
+    #     if lat is None or eng is None:
+    #         return FAILED_OBJ
+    #     return [float(lat), float(eng)]
+
+    # def _record(self, design: Dict[str, Any], obj: List[float]):
+    #     self.all_designs.append(design)
+    #     self.all_objectives.append(obj)
+    #     self._append_csv(obj)
 
     # ------------------------------------------------------------------ #
     # In-loop analysis — reuse the existing agents
