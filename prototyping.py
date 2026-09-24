@@ -1,4 +1,3 @@
-from api.ChatBot.model import ChatBotModel
+from api.Evaluator.gaCascade import runSingleCascade
 
-chat = ChatBotModel()
-chat.rule_mining()
+runSingleCascade()

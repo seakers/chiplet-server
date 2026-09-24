@@ -25,6 +25,7 @@ import threading
 import traceback
 
 from api.Evaluator.gaCascade import runGACascade, runSingleCascade
+from api.Evaluator.gaPistil import runGAPistil
 from api.Evaluator.generator import generate_weighted_trace
 from api.Evaluator.evaluator import evaluate_custom_design
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
@@ -215,9 +216,14 @@ def compute_sum(request):
     
 @api_view(["GET"])
 def get_chart_data(request):
-    print("get_chart_data called")
     comparative = request.GET.get("comparative", "false").lower() == "true"
     requested_algorithm = request.GET.get("algorithm")
+    model = request.GET.get("model", "CASCADE")
+    # WORKSPACE = get_workspace(model)
+    
+    # Only print detailed logs for CASCADE to reduce noise when running Pistil
+    # if model.upper() == "CASCADE":
+    #     print("[CASCADE] get_chart_data called")
     
     # Get file path for loaded runs
     file_path = request.GET.get("file_path")
@@ -246,22 +252,29 @@ def get_chart_data(request):
                 # Try partial match - but be more strict: match at start of run_id
                 # This prevents matching wrong runs when run_id is a substring
                 # WARNING: This fallback might match wrong run if run_id is partial
-                print(f"⚠️ Exact run_id match failed for '{run_id}', trying partial match...")
+                # Only print warnings for CASCADE (Pistil runs aren't in database)
+                if model.upper() == "CASCADE":
+                    print(f"⚠️ Exact run_id match failed for '{run_id}', trying partial match...")
                 run = OptimizationRun.objects.filter(run_id__istartswith=run_id).order_by('-created_at').first()
-                if run:
+                if run and model.upper() == "CASCADE":
                     print(f"⚠️ Partial match found run_id '{run.run_id}' (algorithm: '{run.get_algorithm_display()}') - verify this is correct!")
             if run:
                 determined_algorithm = run.get_algorithm_display()
-                print(f"✅ Determined algorithm from run_id {run_id}: {determined_algorithm} (database algorithm: '{run.algorithm}') (overriding requested_algorithm: {requested_algorithm})")
+                if model.upper() == "CASCADE":
+                    print(f"✅ Determined algorithm from run_id {run_id}: {determined_algorithm} (database algorithm: '{run.algorithm}') (overriding requested_algorithm: {requested_algorithm})")
                 # CRITICAL: Verify the algorithm is correct
                 if run.algorithm == 'GA' and determined_algorithm != 'Genetic Algorithm':
-                    print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{determined_algorithm}'. Forcing to 'Genetic Algorithm'")
+                    if model.upper() == "CASCADE":
+                        print(f"⚠️ WARNING: Database has algorithm='GA' but display is '{determined_algorithm}'. Forcing to 'Genetic Algorithm'")
                     determined_algorithm = 'Genetic Algorithm'
                 elif run.algorithm == 'FF' and determined_algorithm != 'Full-Factorial':
-                    print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{determined_algorithm}'. Forcing to 'Full-Factorial'")
+                    if model.upper() == "CASCADE":
+                        print(f"⚠️ WARNING: Database has algorithm='FF' but display is '{determined_algorithm}'. Forcing to 'Full-Factorial'")
                     determined_algorithm = 'Full-Factorial'
             else:
-                print(f"⚠️ No run found with run_id: {run_id}")
+                # Pistil runs aren't in database, so this is expected - only warn for CASCADE
+                if model.upper() == "CASCADE":
+                    print(f"⚠️ No run found with run_id: {run_id}")
         except Exception as e:
             print(f"❌ Error looking up algorithm from run_id: {e}")
             import traceback
@@ -273,20 +286,22 @@ def get_chart_data(request):
     
     # CRITICAL: Final safety check - ensure algorithm label is correct
     # If we have a run_id but couldn't determine algorithm, warn and use requested or default
-    if run_id and not determined_algorithm:
-        print(f"⚠️ WARNING: Could not determine algorithm from run_id {run_id}, using: {algorithm_to_use}")
+    # Only print warnings for CASCADE to reduce noise
+    if model.upper() == "CASCADE":
+        if run_id and not determined_algorithm:
+            print(f"⚠️ WARNING: Could not determine algorithm from run_id {run_id}, using: {algorithm_to_use}")
+        
+        # Additional validation: if requested_algorithm is 'Genetic Algorithm' but we got something else from DB, 
+        # trust the database unless there's a clear mismatch
+        if determined_algorithm and requested_algorithm:
+            if requested_algorithm == 'Genetic Algorithm' and determined_algorithm != 'Genetic Algorithm':
+                print(f"⚠️ WARNING: Requested 'Genetic Algorithm' but database says '{determined_algorithm}'. Using database value.")
+            elif requested_algorithm == 'Full-Factorial' and determined_algorithm != 'Full-Factorial':
+                print(f"⚠️ WARNING: Requested 'Full-Factorial' but database says '{determined_algorithm}'. Using database value.")
+        
+        print(f"[CASCADE] get_chart_data - requested_algorithm: {requested_algorithm}, determined_algorithm: {determined_algorithm}, run_id: {run_id}, FINAL using: {algorithm_to_use}")
     
-    # Additional validation: if requested_algorithm is 'Genetic Algorithm' but we got something else from DB, 
-    # trust the database unless there's a clear mismatch
-    if determined_algorithm and requested_algorithm:
-        if requested_algorithm == 'Genetic Algorithm' and determined_algorithm != 'Genetic Algorithm':
-            print(f"⚠️ WARNING: Requested 'Genetic Algorithm' but database says '{determined_algorithm}'. Using database value.")
-        elif requested_algorithm == 'Full-Factorial' and determined_algorithm != 'Full-Factorial':
-            print(f"⚠️ WARNING: Requested 'Full-Factorial' but database says '{determined_algorithm}'. Using database value.")
-    
-    print(f"get_chart_data - requested_algorithm: {requested_algorithm}, determined_algorithm: {determined_algorithm}, run_id: {run_id}, FINAL using: {algorithm_to_use}")
-    
-    if comparative:
+    if comparative and model.upper() == "CASCADE":
         # Comparative mode: read from runA_results/points.csv and runB_results/points.csv
         import os
         import csv
@@ -356,45 +371,237 @@ def get_chart_data(request):
         print(f"Comparative chart data: {len(points)} total points")
         return Response({"data": points})
     
-    # Simple mode: read from specified file path or default to points.csv
+    # Simple mode: either read points from file (CASCADE) or run Pistil GA and read its points
     try:
         import os
         import csv
-        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
-        
-        # Use provided file path or default to points.csv
-        if file_path:
-            points_csv_path = file_path
-            print(f"Reading from provided file path: {points_csv_path}")
-        else:
-            points_csv_path = os.path.join(WORKSPACE, 'dse/results/points.csv')
-            print(f"Reading from default points.csv: {points_csv_path}")
-        
-        if os.path.exists(points_csv_path):
-            points = []
-            with open(points_csv_path, mode='r') as file:
-                csv_reader = csv.reader(file)
-                for row in csv_reader:
-                    if len(row) >= 6:  # Ensure we have all required columns
-                        points.append({
-                            'x': float(row[0]),  # time
-                            'y': float(row[1]),  # energy
-                            'gpu': float(row[2]),
-                            'attn': float(row[3]),
-                            'sparse': float(row[4]),
-                            'conv': float(row[5]),
-                            'type': row[6] if len(row) > 6 else 'optimization',  # point type
-                            'algorithm': algorithm_to_use,
-                            'trace': 'gpt-j-65536-weighted'  # Default trace
+
+        # CASCADE path: preserve existing behavior
+        if model.upper() == "CASCADE":
+            WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+
+            # Use provided file path or default to points.csv
+            if file_path:
+                points_csv_path = file_path
+                print(f"[CASCADE] Reading from provided file path: {points_csv_path}")
+            else:
+                points_csv_path = os.path.join(WORKSPACE, 'dse/results/points.csv')
+                print(f"[CASCADE] Reading from default points.csv: {points_csv_path}")
+
+            if os.path.exists(points_csv_path):
+                points = []
+                with open(points_csv_path, mode='r') as file:
+                    csv_reader = csv.reader(file)
+                    for row in csv_reader:
+                        if len(row) >= 6:  # Ensure we have all required columns
+                            points.append({
+                                'x': float(row[0]),  # time
+                                'y': float(row[1]),  # energy
+                                'gpu': float(row[2]),
+                                'attn': float(row[3]),
+                                'sparse': float(row[4]),
+                                'conv': float(row[5]),
+                                'type': row[6] if len(row) > 6 else 'optimization',  # point type
+                                'algorithm': algorithm_to_use,
+                                'trace': 'gpt-j-65536-weighted'  # Default trace
+                            })
+                print(f"[CASCADE] Read {len(points)} points from {points_csv_path}")
+                return Response({"data": points})
+            else:
+                print(f"File not found: {points_csv_path}")
+                return Response({"data": []})
+
+        # PISTIL path: either read from file_path or run GA and read its points.csv
+        if model.upper() == "PISTIL":
+            # Check if file_path is provided (for loading previous runs or polling)
+            if file_path:
+                points_csv_path = file_path
+                print(f"Reading Pistil points from provided file path: {points_csv_path}")
+            else:
+                # Check if we should run GA or just read from a default location
+                # If run_id is provided and starts with "pistil_run_", use that directory
+                run_id_param = request.GET.get("run_id")
+                if run_id_param and run_id_param.startswith("pistil_run_"):
+                    from pathlib import Path as _Path
+                    pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                    output_dir = pistil_root / "dse" / "results" / run_id_param
+                    points_csv_path = os.path.join(str(output_dir), "points.csv")
+                    print(f"Reading Pistil points from run_id directory: {points_csv_path}")
+                else:
+                    # Only run GA if explicitly requested (not during polling)
+                    should_run_ga = request.GET.get("run_ga", "false").lower() == "true"
+                    if should_run_ga:
+                        print("Starting Pistil GA in background from get_chart_data")
+                        from datetime import datetime
+                        from pathlib import Path as _Path
+                        pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                        run_id = f"pistil_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                        output_dir = pistil_root / "dse" / "results" / run_id
+                        os.makedirs(output_dir, exist_ok=True)
+
+                        # Run GA in background thread (like Cascade) so points populate incrementally
+                        def run_pistil_ga():
+                            try:
+                                from api.Evaluator.gaPistil import runGAPistil
+                                pop_size = int(request.GET.get("population_size", 10))
+                                n_gen = int(request.GET.get("generations", 5))
+                                model_name = request.GET.get("pistil_model", "llama3-8b")
+                                
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD STARTED =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] Population: {pop_size}, Generations: {n_gen}, Model: {model_name}")
+                                print(f"[PISTIL GA] Output Directory: {output_dir}")
+                                print(f"[PISTIL GA] =========================================\n")
+                                
+                                runGAPistil(
+                                    pop_size=pop_size,
+                                    n_gen=n_gen,
+                                    model_name=model_name,
+                                    output_dir=str(output_dir),
+                                )
+                                
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD COMPLETED =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] All evaluations finished. Frontend can continue polling.")
+                                print(f"[PISTIL GA] =========================================\n")
+                            except Exception as e:
+                                print(f"\n[PISTIL GA] ===== BACKGROUND THREAD ERROR =====")
+                                print(f"[PISTIL GA] Run ID: {run_id}")
+                                print(f"[PISTIL GA] Error: {e}")
+                                print(f"[PISTIL GA] =====================================\n")
+                                import traceback
+                                traceback.print_exc()
+
+                        # Start GA in background thread
+                        t = threading.Thread(target=run_pistil_ga, daemon=True)
+                        t.start()
+                        
+                        # Return immediately with run_id so frontend can poll
+                        points_csv_path = os.path.join(str(output_dir), "points.csv")
+                        return Response({
+                            "data": [],
+                            "pistil_run_id": run_id,
+                            "pistil_output_dir": str(output_dir),
+                            "message": "Pistil GA started in background, polling for results..."
                         })
-            print(f"Read {len(points)} points from {points_csv_path}")
-            return Response({"data": points})
-        else:
-            print(f"File not found: {points_csv_path}")
-            return Response({"data": []})
-        
+                    else:
+                        # During polling, try to find the most recent Pistil run
+                        from pathlib import Path as _Path
+                        pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                        results_dir = pistil_root / "dse" / "results"
+                        if results_dir.exists():
+                            # Find most recent pistil_run_* directory
+                            pistil_runs = [d for d in results_dir.iterdir() if d.is_dir() and d.name.startswith("pistil_run_")]
+                            if pistil_runs:
+                                latest_run = max(pistil_runs, key=os.path.getmtime)
+                                points_csv_path = os.path.join(str(latest_run), "points.csv")
+                                print(f"Polling: Using most recent Pistil run: {latest_run.name}")
+                            else:
+                                print("No Pistil runs found, returning empty data")
+                                return Response({"data": []})
+                        else:
+                            print("Pistil results directory not found")
+                            return Response({"data": []})
+            if os.path.exists(points_csv_path):
+                points = []
+                with open(points_csv_path, mode='r') as file:
+                    csv_reader = csv.reader(file)
+                    # Read header row
+                    header = next(csv_reader, None)
+                    if header is None:
+                        print(f"Pistil points.csv is empty at {points_csv_path}")
+                        return Response({"data": []})
+                    
+                    # Map column names to indices
+                    col_map = {col: idx for idx, col in enumerate(header)}
+                    
+                    # Required columns for plotting
+                    required_cols = ['latency_ms', 'energy_mJ']
+                    if not all(col in col_map for col in required_cols):
+                        print(f"Pistil points.csv missing required columns. Found: {header}")
+                        return Response({"data": []})
+                    
+                    for row in csv_reader:
+                        if len(row) < len(header):
+                            continue  # Skip incomplete rows
+                        
+                        try:
+                            # Extract core plotting data
+                            # For Pistil, default to latency_per_token and energy_per_inference
+                            # but also include latency_ms and energy_mJ for backward compatibility
+                            latency_ms = float(row[col_map['latency_ms']]) if 'latency_ms' in col_map else 0.0
+                            energy_mJ = float(row[col_map['energy_mJ']]) if 'energy_mJ' in col_map else 0.0
+                            latency_per_token = float(row[col_map['latency_per_token_ms']]) if 'latency_per_token_ms' in col_map else latency_ms
+                            energy_per_inference = float(row[col_map['energy_per_inference_mJ']]) if 'energy_per_inference_mJ' in col_map else energy_mJ
+                            
+                            point = {
+                                'x': latency_per_token,  # Default to latency_per_token for Pistil
+                                'y': energy_per_inference,  # Default to energy_per_inference for Pistil
+                                'latency_ms': latency_ms,  # Keep for backward compatibility
+                                'energy_mJ': energy_mJ,  # Keep for backward compatibility
+                                'type': 'optimization',
+                                'algorithm': algorithm_to_use,
+                                'trace': request.GET.get("trace", "pistil-default"),
+                                'model': 'PISTIL',
+                            }
+                            
+                            # Add decision variables (for filtering/highlighting)
+                            if 'num_cus' in col_map:
+                                point['num_cus'] = float(row[col_map['num_cus']])
+                            if 'num_tmacs' in col_map:
+                                point['num_tmacs'] = float(row[col_map['num_tmacs']])
+                            if 'mem_buf_cap' in col_map:
+                                point['mem_buf_cap'] = float(row[col_map['mem_buf_cap']])
+                            if 'net_buf_cap' in col_map:
+                                point['net_buf_cap'] = float(row[col_map['net_buf_cap']])
+                            if 'mem_banks_per_group' in col_map:
+                                point['mem_banks_per_group'] = float(row[col_map['mem_banks_per_group']])
+                            if 'mem_ranks' in col_map:
+                                point['mem_ranks'] = float(row[col_map['mem_ranks']])
+                            if 'mem_frac_bank_cap' in col_map:
+                                point['mem_frac_bank_cap'] = float(row[col_map['mem_frac_bank_cap']])
+                            if 'batch_size' in col_map:
+                                point['batch_size'] = float(row[col_map['batch_size']])
+                            if 'kv_cache' in col_map:
+                                point['kv_cache'] = float(row[col_map['kv_cache']])
+                            
+                            # Add key performance metrics (for tooltips/analysis)
+                            if 'latency_per_token_ms' in col_map:
+                                point['latency_per_token_ms'] = float(row[col_map['latency_per_token_ms']])
+                            if 'energy_per_inference_mJ' in col_map:
+                                point['energy_per_inference_mJ'] = float(row[col_map['energy_per_inference_mJ']])
+                            if 'energy_per_token_mJ' in col_map:
+                                point['energy_per_token_mJ'] = float(row[col_map['energy_per_token_mJ']])
+                            if 'average_power_W' in col_map:
+                                point['average_power_W'] = float(row[col_map['average_power_W']])
+                            if 'system_power_W' in col_map:
+                                point['system_power_W'] = float(row[col_map['system_power_W']])
+                            if 'system_cost' in col_map:
+                                point['system_cost'] = float(row[col_map['system_cost']])
+                            if 'avg_comp_util' in col_map:
+                                point['avg_comp_util'] = float(row[col_map['avg_comp_util']])
+                            if 'avg_mem_util' in col_map:
+                                point['avg_mem_util'] = float(row[col_map['avg_mem_util']])
+                            if 'prefill_tokens_per_sec' in col_map:
+                                point['prefill_tokens_per_sec'] = float(row[col_map['prefill_tokens_per_sec']])
+                            
+                            points.append(point)
+                        except (ValueError, IndexError) as e:
+                            print(f"Error parsing row in Pistil points.csv: {e}, row: {row}")
+                            continue
+                            
+                print(f"Read {len(points)} Pistil points from {points_csv_path}")
+                return Response({"data": points})
+            else:
+                print(f"Pistil points.csv not found at {points_csv_path}")
+                return Response({"data": []})
+
+        # Unknown model: fallback to empty data
+        print(f"Unknown model in get_chart_data: {model}")
+        return Response({"data": []})
+
     except Exception as e:
-        print(f"Error reading file: {e}")
+        print(f"Error in get_chart_data (model={model}): {e}")
         return Response({"data": []})
 
 @api_view(["GET"])
@@ -410,6 +617,9 @@ def get_chat_response(request):
     """
     content = request.GET.get("content")
     role = request.GET.get("role")
+    evaluator = request.GET.get("evaluator", "cascade")
+    run_id = request.GET.get("run_id", None)
+    chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
     
     # Check for report generation request
     if content and any(phrase in content.lower() for phrase in ["generate report", "download report", "get report", "create report", "export report"]):
@@ -690,6 +900,7 @@ def get_kernel_breakdown(request):
         sparse = request.GET.get("sparse", "0")
         conv = request.GET.get("conv", "0")
         output_format = request.GET.get("format", "json")  # 'json' or 'csv'
+        evaluator = request.GET.get("evaluator")
         
         if not run_id:
             return Response({"error": "run_id is required"}, status=400)
@@ -736,7 +947,7 @@ def get_kernel_breakdown(request):
         
         # Extract kernel breakdown using ChatBot model
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         breakdown = chat_bot.extract_kernel_breakdown(context_file_path=found_path, output_format=output_format)
         
         if breakdown is None:
@@ -976,12 +1187,17 @@ def rule_mining(request):
     energy_max = request.GET.get("energyMax")
     time_min = request.GET.get("timeMin")
     time_max = request.GET.get("timeMax")
+    evaluator = request.GET.get("evaluator")
+    run_id = request.GET.get("run_id")
     
-    # Get file path for loaded runs
-    file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
-    
+    # # Get file path for loaded runs
+    # if evaluator.lower() == "cascade":
+    #     file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+    # elif evaluator.lower() == "pistil":
+    #     file_path = request.GET.get("file_path", "api/Evaluator/pistil/dse/results/points.csv")
+
     print(f"[rule_mining] Parameters: region={region}, pareto_ranks={pareto_start_rank}-{pareto_end_rank}")
-    print(f"[rule_mining] Using file: {file_path}")
+    # print(f"[rule_mining] Using file: {file_path}")
     if energy_min and energy_max:
         print(f"[rule_mining] Energy range: {energy_min}-{energy_max}")
     if time_min and time_max:
@@ -997,21 +1213,22 @@ def rule_mining(request):
             "energy_max": float(energy_max) if energy_max else None,
             "time_min": float(time_min) if time_min else None,
             "time_max": float(time_max) if time_max else None,
-            "file_path": file_path  # Pass the file path to the ChatBot model
+            # "file_path": file_path  # Pass the file path to the ChatBot model
         }
         
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         rule_mining_str = chat_bot.rule_mining(point_selection_params)
         print("[rule_mining] Finished rule_mining() call.")
         
         # Parse the rule_mining_str into a list of dicts for the frontend
         rules = []
-        rule_pattern = re.compile(r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \[([0-9.eE+-]+)\]")
+        rule_pattern = re.compile(r"Rule: (.*?), conf\(f->p\): ([0-9.eE+-]+), conf\(p->f\): ([0-9.eE+-]+), lift: \(?([0-9.eE+-]+)\)?")
         for match in rule_pattern.finditer(rule_mining_str):
             rules.append({
-                "rule": match.group(1),
-                "conf_p_to_f": float(match.group(2)),
-                "conf_f_to_p": float(match.group(3)),
-                "lift": float(match.group(4)),
+            "rule": match.group(1),
+            "conf_f_to_p": float(match.group(2)),
+            "conf_p_to_f": float(match.group(3)),
+            "lift": float(match.group(4)),
             })
         elapsed = time.time() - start_time
         print(f"[rule_mining] Returning {len(rules)} rules. Time taken: {elapsed:.2f} seconds.")
@@ -1023,180 +1240,320 @@ def rule_mining(request):
 @api_view(["GET"])
 def distance_correlation(request):
     """
-    Compute distance correlation between each chiplet type and Energy (y column) and Time (x column).
+    Compute distance correlation between each chiplet/design variable and objectives.
+    Accommodates both Cascade (4 variables) and Pistil (9 variables).
     """
+    print("Running Distance Correlation Views")
+    evaluator = request.GET.get("evaluator", "CASCADE")
+    run_id = request.GET.get("run_id", None)
+    
     try:
-        # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
-        print(f"[distance_correlation] Using file: {file_path}")
+        # Construct file path based on evaluator
+        if evaluator.lower() == 'pistil':
+            # CRITICAL FIX: Check if run_id exists before constructing path
+            if not run_id:
+                return Response({
+                    "error": "run_id is required for PISTIL distance correlation"
+                }, status=400)
+            
+            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv'
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return Response({
+                    "error": f"PISTIL points file not found for run {run_id}"
+                }, status=404)
+                
+        elif evaluator.lower() == 'cascade':
+            file_path = "api/Evaluator/cascade/chiplet_model/dse/results/points.csv"
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return Response({
+                    "error": "CASCADE points file not found"
+                }, status=404)
+        else:
+            return Response({
+                "error": f"Unknown evaluator: {evaluator}"
+            }, status=400)
+
+        print(f"[distance_correlation] Evaluator: {evaluator}, Using file: {file_path}")
         
-        # Load data from CSV
+        # Load data from CSV dynamically
         import csv
-        xs, ys, gpus, attns, sparses, convs = [], [], [], [], [], []
+        import numpy as np
+        import dcor
+        
+        # Read header to detect columns dynamically
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            
+            if not header:
+                return Response({
+                    "error": "CSV file is empty or has no header"
+                }, status=400)
+        
+        # Detect decision variable columns (exclude first 2 objective columns)
+        if evaluator.lower() == "cascade":
+            decision_cols = header[2:]  # Everything after objectives
+            print(f"[distance_correlation] Detected decision columns: {decision_cols}")
+        elif evaluator.lower() == "pistil":
+            decision_cols = header[:9]
+        
+        # Initialize data structures
+        objective_0 = []  # Cascade: Time | Pistil: Latency
+        objective_1 = []  # Cascade: Energy | Pistil: Energy
+        design_vars_data = {col: [] for col in decision_cols}
+
+        # Read data
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
+            next(csv_reader)  # Skip header
+            
             for row in csv_reader:
-                xs.append(float(row[0]))
-                ys.append(float(row[1]))
-                gpus.append(float(row[2]))
-                attns.append(float(row[3]))
-                sparses.append(float(row[4]))
-                convs.append(float(row[5]))
+                if not row or len(row) < 2:
+                    continue
+                    
+                # First two columns are always objectives
+                try:
+                    obj0_val = float(row[0])
+                    obj1_val = float(row[1])
+                    objective_0.append(obj0_val)
+                    objective_1.append(obj1_val)
+                    
+                    # Remaining columns are design variables
+                    for i, col_name in enumerate(decision_cols):
+                        if i + 2 < len(row):  # +2 offset for objectives
+                            design_vars_data[col_name].append(float(row[i + 2]))
+                except (ValueError, IndexError) as e:
+                    print(f"[distance_correlation] Warning: Skipping malformed row: {e}")
+                    continue
         
-        # Check if we have data
-        if len(xs) == 0:
-            return Response({"error": "No data available for distance correlation analysis"}, status=400)
+        if len(objective_0) == 0:
+            return Response({"error": "No valid data available for analysis"}, status=400)
         
-        # Compute distance correlation for each chiplet type vs Energy and vs Time
+        # Safe Distance Correlation Helper
         def safe_dcor(x, y):
-            """Safely compute distance correlation, handling edge cases"""
             try:
                 result = float(dcor.distance_correlation(np.array(x), np.array(y)))
-                # Check for NaN or infinite values
-                if np.isnan(result) or np.isinf(result):
-                    return 0.0
-                return result
+                return 0.0 if np.isnan(result) or np.isinf(result) else result
             except Exception as e:
-                print(f"Error computing distance correlation: {e}")
+                print(f"[distance_correlation] Error computing dcor: {e}")
                 return 0.0
+
+        # Compute correlations for all detected variables
+        result = {}
+        obj0_label = "Time" if evaluator.lower() == "cascade" else "Latency"
+        obj1_label = "Energy"
+
+        for col_name in decision_cols:
+            # Objective 0 (Time/Latency)
+            result[f"{col_name}_vs_{obj0_label}"] = safe_dcor(design_vars_data[col_name], objective_0)
+            # Objective 1 (Energy)
+            result[f"{col_name}_vs_{obj1_label}"] = safe_dcor(design_vars_data[col_name], objective_1)
         
-        result = {
-            "GPU_vs_Energy": safe_dcor(gpus, ys),
-            "Attention_vs_Energy": safe_dcor(attns, ys),
-            "Sparse_vs_Energy": safe_dcor(sparses, ys),
-            "Convolution_vs_Energy": safe_dcor(convs, ys),
-            "GPU_vs_Time": safe_dcor(gpus, xs),
-            "Attention_vs_Time": safe_dcor(attns, xs),
-            "Sparse_vs_Time": safe_dcor(sparses, xs),
-            "Convolution_vs_Time": safe_dcor(convs, xs),
-        }
-        
-        print(f"[distance_correlation] Computed correlations: {result}")
+        print(f"[distance_correlation] Computed {len(result)} correlations")
         return Response(result)
+
     except Exception as e:
-        print(f"[distance_correlation] Exception: {e}")
+        import traceback
+        print(f"[distance_correlation] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
+    
 
 @api_view(["GET"])
 def distance_correlation_insights(request):
     """
     Compute distance correlation and send to LLM for meaningful insights analysis.
-    Now supports goal-aware, design-specific insights with structured data.
+    Now supports both CASCADE and PISTIL evaluators with goal-aware, design-specific insights.
     """
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        import csv
+        import numpy as np
+        import dcor
+        
+        evaluator = request.GET.get("evaluator", "CASCADE")
+        run_id = request.GET.get("run_id", None)
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Get optimization context parameters
         objective = request.GET.get("objective", "both")  # "energy", "time", or "both"
         trace_name = request.GET.get("trace_name", "Unknown")
-        run_id = request.GET.get("run_id", None)
         
-        # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+        # Construct file path based on evaluator
+        if evaluator.lower() == 'pistil':
+            if not run_id:
+                return Response({"error": "run_id is required for PISTIL"}, status=400)
+            file_path = f'api/Evaluator/sim-v2-4-pistil-sim-clean/dse/results/{run_id}/points.csv'
+        else:  # CASCADE
+            file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
         
-        # Load data from CSV
-        import csv
-        xs, ys, gpus, attns, sparses, convs = [], [], [], [], [], []
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return Response({"error": f"Points file not found: {file_path}"}, status=404)
+        
+        # Read header to detect columns dynamically
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return Response({"error": "CSV file is empty or has no header"}, status=400)
+        
+        # Detect decision variable columns based on evaluator
+        if evaluator.lower() == "cascade":
+            decision_cols = header[2:]  # Everything after first 2 objective columns
+            obj0_label = "Time"
+            obj1_label = "Energy"
+        elif evaluator.lower() == "pistil":
+            decision_cols = header[:9]  # First 9 columns are decision variables
+            obj0_label = "Latency"
+            obj1_label = "Energy"
+        else:
+            return Response({"error": f"Unknown evaluator: {evaluator}"}, status=400)
+        
+        print(f"[distance_correlation_insights] Evaluator: {evaluator}, Decision cols: {decision_cols}")
+        
+        # Initialize data structures
+        objective_0 = []  # CASCADE: Time | PISTIL: Latency
+        objective_1 = []  # CASCADE: Energy | PISTIL: Energy
+        design_vars_data = {col: [] for col in decision_cols}
+        
+        # Read data
         with open(file_path, mode='r') as file:
             csv_reader = csv.reader(file)
+            next(csv_reader)  # Skip header
             for row in csv_reader:
-                xs.append(float(row[0]))
-                ys.append(float(row[1]))
-                gpus.append(float(row[2]))
-                attns.append(float(row[3]))
-                sparses.append(float(row[4]))
-                convs.append(float(row[5]))
+                if not row or len(row) < 2:
+                    continue
+                try:
+                    if evaluator.lower() == "cascade":
+                        # CASCADE: objectives in first 2 columns
+                        obj0_val = float(row[0])
+                        obj1_val = float(row[1])
+                        objective_0.append(obj0_val)
+                        objective_1.append(obj1_val)
+                        # Design variables start at column 2
+                        for i, col_name in enumerate(decision_cols):
+                            if i + 2 < len(row):
+                                design_vars_data[col_name].append(float(row[i + 2]))
+                    else:  # PISTIL
+                        # PISTIL: objectives in last 2 columns
+                        obj0_val = float(row[-2])  # latency_ms
+                        obj1_val = float(row[-1])  # energy_mJ
+                        objective_0.append(obj0_val)
+                        objective_1.append(obj1_val)
+                        # Design variables in first 9 columns
+                        for i, col_name in enumerate(decision_cols):
+                            if i < len(row) - 2:  # Exclude last 2 objective columns
+                                design_vars_data[col_name].append(float(row[i]))
+                except (ValueError, IndexError) as e:
+                    print(f"[distance_correlation_insights] Warning: Skipping malformed row: {e}")
+                    continue
         
-        # Compute distance correlation safely (avoid NaN/Inf in JSON)
-        def safe_dcor(a, b):
+        if len(objective_0) == 0:
+            return Response({"error": "No valid data available for analysis"}, status=400)
+        
+        # Safe Distance Correlation Helper
+        def safe_dcor(x, y):
             try:
-                val = float(dcor.distance_correlation(np.array(a), np.array(b)))
-                if np.isnan(val) or np.isinf(val):
-                    return None
-                return val
-            except Exception:
+                result = float(dcor.distance_correlation(np.array(x), np.array(y)))
+                return None if (np.isnan(result) or np.isinf(result)) else result
+            except Exception as e:
+                print(f"[distance_correlation_insights] Error computing dcor: {e}")
                 return None
-
-        correlations = {
-            "GPU_vs_Energy": safe_dcor(gpus, ys),
-            "Attention_vs_Energy": safe_dcor(attns, ys),
-            "Sparse_vs_Energy": safe_dcor(sparses, ys),
-            "Convolution_vs_Energy": safe_dcor(convs, ys),
-            "GPU_vs_Time": safe_dcor(gpus, xs),
-            "Attention_vs_Time": safe_dcor(attns, xs),
-            "Sparse_vs_Time": safe_dcor(sparses, xs),
-            "Convolution_vs_Time": safe_dcor(convs, xs),
-        }
+        
+        # Compute correlations for all detected variables
+        correlations = {}
+        for col_name in decision_cols:
+            # Objective 0 (Time/Latency)
+            correlations[f"{col_name}_vs_{obj0_label}"] = safe_dcor(design_vars_data[col_name], objective_0)
+            # Objective 1 (Energy)
+            correlations[f"{col_name}_vs_{obj1_label}"] = safe_dcor(design_vars_data[col_name], objective_1)
         
         # Create structured JSON data for UI display
-        energy_correlations = {k: v for k, v in correlations.items() if 'Energy' in k}
-        time_correlations = {k: v for k, v in correlations.items() if 'Time' in k}
+        energy_correlations = {k: v for k, v in correlations.items() if obj1_label in k}
+        time_correlations = {k: v for k, v in correlations.items() if obj0_label in k}
         
-        # Sort by correlation value (descending)
-        # Sort, treating None as -inf so they sink to bottom
-        energy_sorted = sorted(energy_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
-        time_sorted = sorted(time_correlations.items(), key=lambda x: (-np.inf if x[1] is None else x[1]), reverse=True)
+        # Sort by correlation value (descending), treating None as -inf
+        energy_sorted = sorted(energy_correlations.items(), 
+                              key=lambda x: (-np.inf if x[1] is None else x[1]), 
+                              reverse=True)
+        time_sorted = sorted(time_correlations.items(), 
+                            key=lambda x: (-np.inf if x[1] is None else x[1]), 
+                            reverse=True)
         
         # Create structured JSON data
         structured_data = {
             "high_impact_on_energy": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
-                for chiplet_metric, value in energy_sorted
+                {"variable": var_metric.split('_vs_')[0], "correlation": (round(value, 3) if value is not None else None)}
+                for var_metric, value in energy_sorted
             ],
             "high_impact_on_time": [
-                {"chiplet": chiplet_metric.split('_vs_')[0], "correlation": (round(value, 3) if (value is not None) else None)}
-                for chiplet_metric, value in time_sorted
+                {"variable": var_metric.split('_vs_')[0], "correlation": (round(value, 3) if value is not None else None)}
+                for var_metric, value in time_sorted
             ],
             "trace_name": trace_name,
             "objective": objective,
+            "evaluator": evaluator,
             "run_id": run_id
         }
         
         # Create a formatted string for the AI
         correlation_data = "Distance Correlation Analysis Results:\n\n"
-        correlation_data += "Energy Impact (Distance Correlation Values):\n"
-        for chiplet_metric, value in energy_sorted:
-            chiplet = chiplet_metric.split('_vs_')[0]
+        correlation_data += f"{obj1_label} Impact (Distance Correlation Values):\n"
+        for var_metric, value in energy_sorted:
+            variable = var_metric.split('_vs_')[0]
             val_str = f"{value:.3f}" if value is not None else "N/A"
-            correlation_data += f"• {chiplet}: {val_str}\n"
+            correlation_data += f"• {variable}: {val_str}\n"
         
-        correlation_data += "\nTime Impact (Distance Correlation Values):\n"
-        for chiplet_metric, value in time_sorted:
-            chiplet = chiplet_metric.split('_vs_')[0]
+        correlation_data += f"\n{obj0_label} Impact (Distance Correlation Values):\n"
+        for var_metric, value in time_sorted:
+            variable = var_metric.split('_vs_')[0]
             val_str = f"{value:.3f}" if value is not None else "N/A"
-            correlation_data += f"• {chiplet}: {val_str}\n"
+            correlation_data += f"• {variable}: {val_str}\n"
         
         # Create goal-aware prompt
         if objective == "energy":
             goal_text = "minimize energy consumption"
             focus_metric = "energy"
         elif objective == "time":
-            goal_text = "minimize execution time"
-            focus_metric = "execution time"
+            goal_text = f"minimize {obj0_label.lower()}"
+            focus_metric = obj0_label.lower()
         else:
-            goal_text = "optimize both energy and execution time"
+            goal_text = f"optimize both energy and {obj0_label.lower()}"
             focus_metric = "both metrics"
         
+        # Adjust terminology based on evaluator
+        if evaluator.lower() == "cascade":
+            design_element = "chiplet types"
+        else:  # PISTIL
+            design_element = "design parameters"
+        
         prompt = (
-            f"You are an expert in chiplet design. The current design goal is to {goal_text}.\n\n"
+            f"You are an expert in hardware design using the {evaluator} evaluator. "
+            f"The current design goal is to {goal_text}.\n\n"
             f"Trace used: {trace_name}\n\n"
-            f"Here are distance correlation results showing the relationship between chiplet types and performance metrics. "
+            f"Here are distance correlation results showing the relationship between {design_element} and performance metrics. "
             f"Distance correlation ranges from 0 (no relationship) to 1 (perfect relationship).\n\n"
             f"JSON Data:\n{json.dumps(structured_data, indent=2)}\n\n"
             f"Provide a concise, actionable summary (2-3 sentences) covering:\n"
-            f"1. Which chiplet types have the strongest impact on {focus_metric} and why\n"
+            f"1. Which {design_element} have the strongest impact on {focus_metric} and why\n"
             f"2. One practical design recommendation for improving performance\n"
             f"3. Any surprising findings (if any)\n\n"
             f"Keep your response focused and to the point. Users can ask follow-up questions for more details."
         )
         
         response = chat_bot.get_response(prompt, role="user")
+        
         return Response({
             "insights": response,
             "structured_data": structured_data
         })
     except Exception as e:
+        import traceback
+        print(f"[distance_correlation_insights] Exception: {traceback.format_exc()}")
         return Response({"error": str(e)}, status=500)
 
 @api_view(["GET"])
@@ -1205,14 +1562,16 @@ def rule_mining_insights(request):
     Run rule mining, send the results to the LLM, and return a natural-language summary.
     Now supports goal-aware, design-specific insights with structured data.
     """
+    print("Running Rule Mining Insights Views")
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        evaluator = request.GET.get("evaluator")
+        run_id = request.GET.get("run_id", None)
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Get optimization context parameters
         objective = request.GET.get("objective", "both")  # "energy", "time", or "both"
         trace_name = request.GET.get("trace_name", "Unknown")
-        run_id = request.GET.get("run_id", None)
         
         # Get point selection parameters from request (same as rule_mining endpoint)
         region = request.GET.get("region", "pareto")
@@ -1224,7 +1583,7 @@ def rule_mining_insights(request):
         time_max = request.GET.get("timeMax")
         
         # Get file path for loaded runs
-        file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
+        # file_path = request.GET.get("file_path", "api/Evaluator/cascade/chiplet_model/dse/results/points.csv")
         
         # Create point selection parameters for ChatBot model
         point_selection_params = {
@@ -1235,7 +1594,7 @@ def rule_mining_insights(request):
             "energy_max": float(energy_max) if energy_max else None,
             "time_min": float(time_min) if time_min else None,
             "time_max": float(time_max) if time_max else None,
-            "file_path": file_path  # Add file path for loaded runs
+            # "file_path": file_path  # Add file path for loaded runs
         }
         
         rule_mining_str = chat_bot.rule_mining(point_selection_params)
@@ -2146,12 +2505,204 @@ Just ask me to compare any aspect of the two runs!"""
                             })
                     except Exception as e:
                         return JsonResponse({"status": "error", "message": str(e)}, status=500)
-                else:
-                    # NOT Full-Factorial - continue to GA path
-                    print(f"✅ GA RUN: Algorithm is '{algorithm_raw}' (not Full-Factorial) - proceeding to GA path")
-                
-                # GA path (only reached if not Full-Factorial)
-                if algorithm_raw != 'Full-Factorial':
+
+                # Deep RL path
+                elif algorithm_raw == 'Deep RL':
+                    try:
+                        print(f"✅ DEEP RL RUN: Confirmed algorithm='Deep RL' - proceeding with Deep RL optimization")
+                        import os
+                        import time
+                        
+                        # Parse parameters
+                        model = data.get('model', 'CASCADE')
+                        objectives = data.get('objectives', [])
+                        traces = data.get('traces', [])
+                        episodes = int(data.get('episodes', 100))
+                        mini_batch_size = int(data.get('mini_batch_size', 32))
+                        pistil_model = data.get('pistil_model', 'llama3-8b')  # For PISTIL model
+                        
+                        # Validate parameters
+                        if episodes < 1:
+                            return JsonResponse({"status": "error", "message": f"episodes must be at least 1, got {episodes}"}, status=400)
+                        if mini_batch_size < 1:
+                            return JsonResponse({"status": "error", "message": f"mini_batch_size must be at least 1, got {mini_batch_size}"}, status=400)
+                        if not traces:
+                            return JsonResponse({"status": "error", "message": "At least one trace is required"}, status=400)
+                        
+                        # Determine trace name
+                        if isinstance(traces, list) and len(traces) == 1:
+                            trace_name = traces[0].get('name', traces[0]) if isinstance(traces[0], dict) else traces[0]
+                        else:
+                            trace_names = [t.get('name', t) if isinstance(t, dict) else t for t in traces]
+                            weights = [t.get('weight', 1.0) if isinstance(t, dict) else 1.0 for t in traces]
+                            trace_name = generate_weighted_trace(trace_names, weights, label='deepRL')
+                        
+                        # Generate unique run ID based on model type
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        
+                        if model.upper() == 'PISTIL':
+                            # PISTIL: Use pistil-specific run_id and directory structure
+                            run_id = f"pistil_run_{timestamp}"
+                            from pathlib import Path as _Path
+                            pistil_root = _Path(__file__).parent / "Evaluator" / "sim-v2-4-pistil-sim-clean"
+                            output_dir = pistil_root / "dse" / "results" / run_id
+                            os.makedirs(output_dir, exist_ok=True)
+                            points_csv_path = os.path.join(str(output_dir), "points.csv")
+                            
+                            # Write PISTIL CSV header
+                            pistil_header = "num_cus,num_tmacs,mem_buf_cap,net_buf_cap,mem_banks_per_group,mem_ranks,mem_frac_bank_cap,batch_size,kv_cache,latency_per_token_ms,energy_per_inference_mJ,energy_per_token_mJ,average_power_W,system_power_W,system_cost,avg_comp_util,avg_mem_util,prefill_tokens_per_sec,latency_ms,energy_mJ"
+                            with open(points_csv_path, 'w') as f:
+                                f.write(pistil_header + "\n")
+                            
+                            print(f"✅ DEEP RL RUN (PISTIL): Created output directory: {output_dir}")
+                        else:
+                            # CASCADE: Use cascade-specific directory structure
+                            run_id = f"deep_rl_run_{timestamp}"
+                            WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+                            RESULTS_DIR = os.path.join(WORKSPACE, 'dse/results')
+                            output_dir = RESULTS_DIR
+                            points_csv_path = os.path.join(RESULTS_DIR, "points.csv")
+                            
+                            # Clear CASCADE points.csv (no header needed)
+                            with open(points_csv_path, 'w') as f:
+                                f.write("")
+                            
+                            print(f"✅ DEEP RL RUN (CASCADE): Using output directory: {output_dir}")
+                        
+                        # Create run directory for database storage
+                        run_dir = create_run_directory(run_id)
+                        
+                        # Create run in storage
+                        print(f"✅ DEEP RL RUN: Creating database record with algorithm='DRL'")
+                        run_name = f"Deep RL Run ({model})"
+                        optimization_run = RunStorageService.create_optimization_run(
+                            algorithm='DRL',  # Database code for Deep RL
+                            model=model,
+                            population_size=0,  # Not applicable for Deep RL
+                            generations=0,  # Not applicable for Deep RL
+                            objectives=objectives,
+                            trace_name=pistil_model,
+                            trace_sets={'main': pistil_model},
+                            name=run_name,
+                            description=f"Deep RL episodes={episodes}, mini_batch_size={mini_batch_size}, model={model}"
+                        )
+                        print(f"✅ DEEP RL RUN: Created run {optimization_run.run_id}")
+                        
+                        def run_deep_rl_job():
+                            """Background job to run Deep RL optimization"""
+                            execution_time_seconds = None
+                            try:
+                                start_time = time.time()
+                                print(f"✅ DEEP RL RUN: Starting Deep RL with {episodes} episodes, mini_batch_size={mini_batch_size}")
+                                print(f"✅ DEEP RL RUN: Model: {model}, Trace: {pistil_model}")
+                                
+                                if model.upper() == 'PISTIL':
+                                    # Import and run PPO for Pistil
+                                    from api.Evaluator.rlPistil import runPPOPistil
+                                    
+                                    designs, objectives, design_points = runPPOPistil(
+                                        num_epochs=episodes,
+                                        mini_batch_size=mini_batch_size,
+                                        model_name=pistil_model if pistil_model else "llama3-8b",
+                                        output_dir=points_csv_path
+                                    )
+                                    
+                                    # Write to CSV (your existing format)
+                                    # for dp in design_points:
+                                    #     row = f"{dp['num_cus']},{dp['num_tmacs']},{dp['mem_buf_cap']},{dp['net_buf_cap']},{dp['mem_banks_per_group']},{dp['mem_ranks']},{dp['mem_frac_bank_cap']:.4f},{dp['batch_size']},{dp['kv_cache']},{dp['latency_ms']:.4f},{dp['energy_mJ']:.4f}"
+                                    #     with open(points_csv_path, 'a') as f:
+                                    #         f.write(row + "\n")
+                                            
+                                else:
+                                    # Import and run PPO for Cascade
+                                    from api.Evaluator.rlCascade import runPPOCascade
+                                    
+                                    designs, objectives, design_points = runPPOCascade(
+                                        num_epochs=episodes,
+                                        mini_batch_size=mini_batch_size,
+                                        trace=trace_name if trace_name else "gpt-j-65536-weighted",
+                                    )
+                                    
+                                    # Write to CSV (your existing format)
+                                    for dp in design_points:
+                                        c = dp['chiplets']
+                                        with open(points_csv_path, 'a') as f:
+                                            f.write(f"{dp['execution_time_ms']},{dp['energy_mj']},{c['GPU']},{c['Attention']},{c['Sparse']},{c['Convolution']}\n")
+                                
+                                # Calculate execution time
+                                execution_time_seconds = time.time() - start_time
+                                print(f"✅ DEEP RL RUN ({model}): Completed {len(design_points)} episodes in {execution_time_seconds:.2f} seconds")
+                                
+                                # Store design points in database (existing code)
+                                if design_points:
+                                    print(f"✅ DEEP RL RUN: Storing {len(design_points)} design points to database")
+                                    RunStorageService.store_design_points(
+                                        optimization_run,
+                                        design_points,
+                                        run_dir
+                                    )
+                                    print(f"✅ DEEP RL RUN: Design points stored successfully")
+            
+                            except Exception as e:
+                                print(f"❌ DEEP RL RUN: Error during execution: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                raise
+                            finally:
+                                # Mark run as completed
+                                try:
+                                    analytics_results = {'rule_mining': '', 'distance_correlation': ''}
+                                    print(f"✅ DEEP RL RUN: Completing run {optimization_run.run_id}")
+                                    completed_run = RunStorageService.complete_run(
+                                        optimization_run,
+                                        execution_time_seconds=execution_time_seconds,
+                                        analytics_results=analytics_results
+                                    )
+                                    print(f"✅ DEEP RL RUN: Run {completed_run.run_id} marked as completed")
+                                except Exception as e:
+                                    print(f"❌ DEEP RL RUN: Error completing run: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        
+                        # Start background thread and return immediately
+                        t = threading.Thread(target=run_deep_rl_job, daemon=True)
+                        t.start()
+                        
+                        # Return response with appropriate run_id format
+                        response_data = {
+                            'status': 'started',
+                            'data': [],
+                            'plot_data': [],
+                            'run_id': optimization_run.run_id,
+                            'run_directory': run_id,
+                            'deep_rl_run_id': run_id,
+                            'model': model,
+                            'metadata': {
+                                'model': model,
+                                'algorithm': 'Deep RL',
+                                'objectives': objectives,
+                                'episodes': episodes,
+                                'mini_batch_size': mini_batch_size,
+                                'trace': trace_name,
+                                'pistil_model': pistil_model if model.upper() == 'PISTIL' else None
+                            }
+                        }
+                        
+                        # For PISTIL, also include pistil_run_id so frontend polling works correctly
+                        if model.upper() == 'PISTIL':
+                            response_data['pistil_run_id'] = run_id
+                        
+                        return JsonResponse(response_data)
+                        
+                    except Exception as e:
+                        print(f"❌ DEEP RL RUN: Error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return JsonResponse({"status": "error", "message": str(e)}, status=500)
+
+                # GA path (only reached if not Full-Factorial and not Deep RL)
+                if algorithm_raw != 'Full-Factorial' and algorithm_raw != 'Deep RL':
                     print("✅ GA RUN: Processing as REGULAR (Genetic Algorithm) optimization")
                     # Regular (non-comparative) optimization - THIS IS ALWAYS GA
                     try:
@@ -3338,13 +3889,16 @@ def list_backup_files(request):
         from datetime import datetime
         from .models import OptimizationRun
         
-        WORKSPACE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
-        results_dir = os.path.join(WORKSPACE, 'dse/results')
+        WORKSPACE_CASCADE = sys.path[0] + '/api/Evaluator/cascade/chiplet_model'
+        WORKSPACE_PISTIL = sys.path[0] + '/api/Evaluator/sim-v2-4-pistil-sim-clean'
+        results_dir_cascade = os.path.join(WORKSPACE_CASCADE, 'dse/results')
+        results_dir_pistil = os.path.join(WORKSPACE_PISTIL, 'dse/results')
         
-        file_list = []
+        files_cascade = []
+        files_pistil = []
         
         # 1. Find all CSV backup files
-        backup_pattern = os.path.join(results_dir, "points_backup_*.csv")
+        backup_pattern = os.path.join(results_dir_cascade, "points_backup_*.csv")
         backup_files = glob.glob(backup_pattern)
         
         for file_path in backup_files:
@@ -3359,48 +3913,78 @@ def list_backup_files(request):
                     'timestamp': timestamp.isoformat(),
                     'display_name': f"Run {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
                     'file_path': file_path,
-                    'source': 'backup_file'
+                    'source': 'backup_file',
+                    'evaluator': 'cascade'
                 }
-                file_list.append(file_info)
+                files_cascade.append(file_info)
             except ValueError:
                 # Skip files with invalid timestamps
                 continue
+        # 2. Find all CSV backup files in Pistil workspace (if any)
+
+        backup_pattern_pistil = os.path.join(results_dir_pistil, "pistil_run_*")
+        backup_dirs_pistil = glob.glob(backup_pattern_pistil)
+
+        for dir_path in backup_dirs_pistil:
+            if os.path.isdir(dir_path):
+                points_file = os.path.join(dir_path, "points.csv")
+                if os.path.exists(points_file):
+                    # Extract folder name which contains timestamp
+                    folder_name = os.path.basename(dir_path)
+                    timestamp_str = folder_name.replace("pistil_run_", "")
+                    
+                    try:
+                        # Parse timestamp
+                        timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                        file_info = {
+                            'filename': folder_name,
+                            'timestamp': timestamp.isoformat(),
+                            'display_name': f"Run {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+                            'file_path': points_file,
+                            'source': 'backup_file',
+                            'evaluator': 'pistil'
+                        }
+                        files_pistil.append(file_info)
+                    except ValueError:
+                        # Skip folders with invalid timestamps
+                        continue
+
+        # # 3. Get all completed optimization runs from database
+        # completed_runs = OptimizationRun.objects.filter(status='completed').order_by('-created_at')
         
-        # 2. Get all completed optimization runs from database
-        completed_runs = OptimizationRun.objects.filter(status='completed').order_by('-created_at')
-        
-        for run in completed_runs:
-            try:
-                # Use run_id as the identifier, create display name from run name or timestamp
-                # Consistent format: "Custom Name (Algorithm)" or "Run YYYY-MM-DD HH:MM:SS (Algorithm)"
-                algorithm_display = run.get_algorithm_display()
-                if run.name:
-                    # Custom name: "My Custom Run (Genetic Algorithm)"
-                    display_name = f"{run.name} ({algorithm_display})"
-                else:
-                    # No custom name: "Run 2025-01-15 14:30:00 (Genetic Algorithm)"
-                    display_name = f"Run {run.created_at.strftime('%Y-%m-%d %H:%M:%S')} ({algorithm_display})"
+        # for run in completed_runs:
+        #     try:
+        #         # Use run_id as the identifier, create display name from run name or timestamp
+        #         # Consistent format: "Custom Name (Algorithm)" or "Run YYYY-MM-DD HH:MM:SS (Algorithm)"
+        #         algorithm_display = run.get_algorithm_display()
+        #         if run.name:
+        #             # Custom name: "My Custom Run (Genetic Algorithm)"
+        #             display_name = f"{run.name} ({algorithm_display})"
+        #         else:
+        #             # No custom name: "Run 2025-01-15 14:30:00 (Genetic Algorithm)"
+        #             display_name = f"Run {run.created_at.strftime('%Y-%m-%d %H:%M:%S')} ({algorithm_display})"
                 
-                # For database runs, we'll use the run_id as the "filename" identifier
-                file_info = {
-                    'filename': run.run_id,  # Use run_id as identifier
-                    'timestamp': run.created_at.isoformat(),
-                    'display_name': display_name,
-                    'file_path': '',  # No file path for database runs
-                    'source': 'database',
-                    'run_id': run.run_id,
-                    'algorithm': algorithm_display,
-                    'total_designs': run.total_designs_evaluated
-                }
-                file_list.append(file_info)
-            except Exception as e:
-                print(f"Error processing database run {run.run_id}: {e}")
-                continue
+        #         # For database runs, we'll use the run_id as the "filename" identifier
+        #         file_info = {
+        #             'filename': run.run_id,  # Use run_id as identifier
+        #             'timestamp': run.created_at.isoformat(),
+        #             'display_name': display_name,
+        #             'file_path': '',  # No file path for database runs
+        #             'source': 'database',
+        #             'run_id': run.run_id,
+        #             'algorithm': algorithm_display,
+        #             'total_designs': run.total_designs_evaluated
+        #         }
+        #         file_list.append(file_info)
+        #     except Exception as e:
+        #         print(f"Error processing database run {run.run_id}: {e}")
+        #         continue
         
         # Sort by timestamp (newest first)
+        file_list = files_cascade + files_pistil
         file_list.sort(key=lambda x: x['timestamp'], reverse=True)
         
-        print(f"✅ list_backup_files: Returning {len(file_list)} runs ({len(backup_files)} backup files + {completed_runs.count()} database runs)")
+        print(f"✅ list_backup_files: Returning {len(file_list)} runs ({len(files_cascade)} cascade backup files + {len(files_pistil)} pistil backup files)")
         
         return JsonResponse({
             'status': 'success',
@@ -3784,8 +4368,9 @@ def get_previous_run_report(request):
         pareto_points = get_pareto_front(points)
         
         # Get rule mining results
+        evaluator = request.GET.get("evaluator")
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         # Use the backup file for rule mining
         point_selection_params = {
@@ -4047,7 +4632,9 @@ def data_mining_followup(request):
     """
     try:
         from api.ChatBot.model import ChatBotModel
-        chat_bot = ChatBotModel()
+        evaluator = request.GET.get("evaluator")
+        run_id = request.GET.get("run_id")
+        chat_bot = ChatBotModel(evaluator=evaluator, run_id=run_id)
         
         data = json.loads(request.body)
         question = data.get("question")
@@ -4277,6 +4864,7 @@ def generate_comparative_report(request):
         print(f"Request GET params: {request.GET}")
         
         # Get run IDs from request parameters
+        evaluator = request.GET.get("evaluator")
         run_a_id = request.GET.get('run_a_id')
         run_b_id = request.GET.get('run_b_id')
         
@@ -4423,7 +5011,7 @@ def generate_comparative_report(request):
         
         # Get rule mining results for both runs
         print("Initializing ChatBot for rule mining...")
-        chat_bot = ChatBotModel()
+        chat_bot = ChatBotModel(evaluator=evaluator)
         
         def get_rule_mining_results(run_id):
             """Get rule mining results for a specific run"""
@@ -4440,6 +5028,7 @@ def generate_comparative_report(request):
             
             point_selection_params = {"file_path": file_path}
             try:
+                chat_bot.run_id = run_id
                 rule_mining_str = chat_bot.rule_mining(point_selection_params)
                 print(f"Rule mining completed for {run_id}")
                 

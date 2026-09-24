@@ -1,0 +1,67 @@
+{
+    "NUM_CHIPLETS": 0,
+    "ENERGY":{
+        "TMAC": 25.6,
+        "HP_VEC_OP": 1.5,
+        "SRAM_R": 0.2,
+        "SRAM_W": 0.22,
+        "SD_PJ_P_B_SCALAR": 0.01,
+        "PJ_PER_MM": 0.1,
+        "UCIE_S_SUB": 0.5,
+        "UCIE_S_PCB_S": 1.0,
+        "UCIE_S_PCB_L": 1.2,
+        "GRS_PCB": 1.17,
+        "POWER_DELIVERY": 0.15
+    },
+    "CORE":{
+        "CLK_FREQ": 2.0,
+        "NET_BUS_FREQ": 1.0,
+        "TMAC_OPS_PER_CYCLE": 64,
+        "TMAC_VECTOR_HEIGHT": 8,
+        "TMAC_VECTOR_WIDTH": 8,
+        "HP_OPS_PER_CYCLE": 8,
+        "HP_OPS_LATENCY": 4,
+        "NET_LATENCY_CYCLES": 8,
+        "C_MATRIX_THRESHOLD": 0.8,
+        "REDUCTION_BYTES_PER_CYCLE": 64,
+        "REDUCTION_LATENCY_CYCLES": 4,
+        "WIRES_PER_UM": 26,
+        "DISTANCE": {
+            "TMAC_HEIGHT": 0.1,
+            "COMPUTE_BUS_HEIGHT": 0.1,
+            "HP_HEIGHT": 0.025,
+            "CTRL_HEIGHT": 0.17
+        },
+        "WIDTH_MM": 0.4
+    },
+    "COMPUTE_CHIPLET": {
+        "CORES": 16,
+        "CORE_TO_CORE_BYTES_PER_CYCLE": 32,
+        "UCIE_SHORELINE": 2.5,
+        "UCIE_BW_PER_MM": 256,
+        "WIDTH_MM": 3.75
+    },
+    "MEMORY_CHIPLET": {
+        "BANK_GROUPS": 1,
+        "CH_PER_LAYER": 1,
+        "RANKS": 1,
+        "FRAC_BANK_CAP": 1.0
+    },
+    "PKG": {
+        "COMPUTE_CHIPLETS": 4,
+        "HEIGHT_MM": 15.0 
+    },
+    "RING_STATION": {
+        "PKGS": 0,
+        "PKGS_PER_STRING": 0,
+        "STRINGS": 0,
+        "WIDTH_MM": 0.0,
+        "HEIGHT_MM": 0.0  
+    },
+    "COST":{
+        "N2_COST_PER_MM": 0.75,
+        "SUBSTRATE_COST_PER_MM": 0.05,
+        "PCB_COST_PER_MM": 0.005,
+        "COST_PER_GB_HBM": 10
+    }
+}
