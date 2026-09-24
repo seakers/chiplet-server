@@ -10,3 +10,4 @@ from .evaluation_agent import EvaluationAgent
 from .highlighting_agent import HighlightingAgent
 from .report_agent import ReportAgent
 from .comparative_agent import ComparativeAnalysisAgent
+from .plotting_agent import PlottingAgent

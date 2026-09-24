@@ -115,6 +115,11 @@ def chat(request):
                         'type': 'comparative_analysis_result',
                         'data': result.data
                     })
+            elif agent_name == 'plotting_agent':
+                frontend_actions.append({
+                    'type': 'create_plot',
+                    'data': result.data or {}
+                })
         bot.last_agent_results = []  # Clear after reading
         print(f"Frontend actions: {frontend_actions}")
         
@@ -450,6 +455,11 @@ def get_chat_response(request):
                         'type': 'comparative_analysis_result',
                         'data': result.data
                     })
+            elif agent_name == 'plotting_agent':
+                frontend_actions.append({
+                    'type': 'create_plot',
+                    'data': result.data or {}
+                })
         bot.last_agent_results = []
 
         return Response({"response": response, "frontend_actions": frontend_actions})

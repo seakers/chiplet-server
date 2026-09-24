@@ -25,7 +25,8 @@ from .agents import (
     EvaluationAgent,
     HighlightingAgent,
     ReportAgent,
-    ComparativeAnalysisAgent
+    ComparativeAnalysisAgent,
+    PlottingAgent
 )
 from .agents.memory import ConversationMemory
 from .agents.preprocessor import QueryPreprocessor
@@ -100,6 +101,7 @@ class ChatBot:
             'highlighting_agent': HighlightingAgent(self.evaluator, self.run_id),
             'report_agent': ReportAgent(self.evaluator, self.run_id),
             'comparative_analysis_agent': ComparativeAnalysisAgent(self.evaluator, self.run_id),
+            'plotting_agent': PlottingAgent(self.evaluator, self.run_id),
         }
 
     def _handle_tool_calls(self, message) -> str:
@@ -129,6 +131,7 @@ class ChatBot:
             'optimization_agent',   # NEW — never makes sense to cache
             'report_agent',         # NEW — always generate fresh
             'comparative_analysis_agent',  # NEW
+            'plotting_agent',       # NEW
         }
 
         for tool_call in message.tool_calls:

@@ -46,7 +46,7 @@ class RuleMiner:
     # Feature bins for categorizing design variable values
     FEATURE_BINS = ['none', 'low', 'medium', 'high']
     
-    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.02):
+    def __init__(self, evaluator: str = 'cascade', min_support: float = 0.1):
         self.evaluator = evaluator.lower()
         self.config = get_evaluator_config(evaluator)
         self.objectives_first = self.config.objectives_first
